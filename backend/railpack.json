@@ -1,0 +1,26 @@
+{
+  "$schema": "https://railpack.com/schema.json",
+  "provider": "php",
+  "php": {
+    "version": "8.3"
+  },
+  "variables": {
+    "COMPOSER_NO_SCRIPTS": "1"
+  },
+  "install": {
+    "cmds": [
+      "composer install --no-dev --optimize-autoloader --no-scripts --no-interaction"
+    ]
+  },
+  "build": {
+    "cmds": [
+      "echo 'Skipping build - packages already installed'"
+    ]
+  },
+  "deploy": {
+    "cmds": [
+      "php artisan migrate --force",
+      "php artisan db:seed --force"
+    ]
+  }
+}
