@@ -15,18 +15,17 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ onSettings }: DashboardProps) {
-    // Default "Offline" bin to show when no devices are connected
     const DEFAULT_BIN: Bin = {
         id: 0,
-        name: "No Bins Connected",
-        location: "Waiting for device...",
+        name: "Bin #1",
+        location: "Cafeteria, Building A-1",
         fill: 0,
         battery: 0,
         gas: "Normal",
         weight: 0,
         status: "Offline",
-        latitude: 0,
-        longitude: 0
+        latitude: 11.237934,
+        longitude: 124.999284
     }
 
     const [bins, setBins] = useState<Bin[]>([DEFAULT_BIN])

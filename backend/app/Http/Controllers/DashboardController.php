@@ -3,9 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\Device;
-use App\Models\User;
-use App\Models\Alert;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Laravel\Sanctum\PersonalAccessToken;
 
 class DashboardController extends Controller
@@ -19,9 +18,19 @@ class DashboardController extends Controller
         // Online Check: Device seen in last 5 minutes
         $offlineThreshold = config('sensors.offline_threshold_minutes', 5);
         $onlineThreshold = now()->subMinutes($offlineThreshold);
-        
-        $totalBins = Device::count();
-        $binsOnline = Device::where('last_seen_at', '>=', $onlineThreshold)->count();
+
+        $devices = $this->filterVisibleDevices(
+            Device::query()
+                ->with('alerts')
+                ->orderBy('bin_number')
+                ->orderBy('id')
+                ->get()
+        );
+
+        $totalBins = $devices->count();
+        $binsOnline = $devices->filter(function (Device $device) use ($onlineThreshold) {
+            return $device->last_seen_at && $device->last_seen_at >= $onlineThreshold;
+        })->count();
 
         // System is Offline if ALL devices are offline
         $systemStatus = ($binsOnline > 0) ? 'Online' : 'Offline';
@@ -33,11 +42,15 @@ class DashboardController extends Controller
             ->count('tokenable_id');
 
         // Active alerts breakdown
-        $activeAlerts = Alert::where('status', 'active')->get();
+        $activeAlerts = $devices->flatMap(function (Device $device) {
+            return $device->alerts->where('status', 'active');
+        });
         
         $criticalCount = $activeAlerts->whereIn('type', ['gas_leak', 'trash_full'])->count();
         $warningCount = $activeAlerts->whereIn('type', ['gas_elevated', 'trash_warning'])->count();
-        $normalCount = $totalBins - Device::whereHas('alerts', fn($q) => $q->where('status', 'active'))->count();
+        $normalCount = $totalBins - $devices->filter(function (Device $device) {
+            return $device->alerts->where('status', 'active')->isNotEmpty();
+        })->count();
 
         return response()->json([
             'system_status' => $systemStatus,
@@ -61,12 +74,17 @@ class DashboardController extends Controller
     {
         $offlineThreshold = config('sensors.offline_threshold_minutes', 5);
         
-        $devices = Device::with([
-            'readings' => function ($q) {
-                // Get most recent reading of each type
-                $q->latest()->limit(10);
-            }
-        ])->get();
+        $devices = $this->filterVisibleDevices(
+            Device::query()
+                ->with([
+                    'readings' => function ($q) {
+                        $q->latest()->limit(10);
+                    }
+                ])
+                ->orderBy('bin_number')
+                ->orderBy('id')
+                ->get()
+        );
 
         $data = $devices->map(function ($dev) use ($offlineThreshold) {
             ['location' => $location, 'latitude' => $latitude, 'longitude' => $longitude] = $this->resolveMapData($dev);
@@ -130,6 +148,32 @@ class DashboardController extends Controller
         });
 
         return response()->json($data);
+    }
+
+    private function filterVisibleDevices(Collection $devices): Collection
+    {
+        $realBinNumbers = $devices
+            ->reject(fn(Device $device) => $device->isDemoPlaceholder())
+            ->map(fn(Device $device) => (int) ($device->bin_number ?? 1))
+            ->unique();
+
+        if ($realBinNumbers->isEmpty()) {
+            return $devices
+                ->reject(function (Device $device) {
+                    return $device->isDemoPlaceholder()
+                        && (int) ($device->bin_number ?? 1) !== 1;
+                })
+                ->sortBy(fn(Device $device) => sprintf('%03d-%010d', (int) ($device->bin_number ?? 99), $device->id))
+                ->values();
+        }
+
+        return $devices
+            ->reject(function (Device $device) use ($realBinNumbers) {
+                return $device->isDemoPlaceholder()
+                    && $realBinNumbers->contains((int) ($device->bin_number ?? 1));
+            })
+            ->sortBy(fn(Device $device) => sprintf('%03d-%010d', (int) ($device->bin_number ?? 99), $device->id))
+            ->values();
     }
 
     private function resolveMapData(Device $device): array

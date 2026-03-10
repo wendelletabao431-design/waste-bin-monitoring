@@ -7,6 +7,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Device extends Model
 {
+    private const DEMO_UIDS = [
+        1 => 'ESP32_001',
+        2 => 'ESP32_002',
+    ];
+
     private const UNASSIGNED_LOCATIONS = [
         '',
         'unassigned location',
@@ -35,6 +40,11 @@ class Device extends Model
         'longitude' => 'float',
         'battery_percent' => 'float',
     ];
+
+    public static function defaultUidForBin(?int $binNumber): ?string
+    {
+        return self::DEMO_UIDS[(int) $binNumber] ?? null;
+    }
 
     public static function defaultMetadataForBin(?int $binNumber): array
     {
@@ -68,6 +78,15 @@ class Device extends Model
             && is_numeric($this->longitude)
             && (float) $this->latitude !== 0.0
             && (float) $this->longitude !== 0.0;
+    }
+
+    public function isDemoPlaceholder(): bool
+    {
+        $defaultUid = self::defaultUidForBin($this->bin_number);
+
+        return $this->parent_device_id === null
+            && $defaultUid !== null
+            && $this->uid === $defaultUid;
     }
 
     public function readings(): HasMany

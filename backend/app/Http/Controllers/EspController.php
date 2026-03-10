@@ -80,29 +80,23 @@ class EspController extends Controller
      */
     private function processBinData(string $parentDeviceId, int $binNumber, array $binData, float $batteryPercent): array
     {
-        // Create unique identifier for this bin
         $binUid = "{$parentDeviceId}_bin{$binNumber}";
-
-        // Auto-register device if it doesn't exist
-        $device = Device::firstOrCreate(
-            ['uid' => $binUid],
-            [
-                'name' => "Smart Bin {$binNumber}",
-                'location' => 'Unassigned Location',
-                'parent_device_id' => $parentDeviceId,
-                'bin_number' => $binNumber,
-                'is_active' => true,
-            ]
-        );
+        $device = $this->resolveBinDevice($parentDeviceId, $binNumber, $binUid);
 
         $metadataUpdates = $this->defaultLocationUpdates($device, $binNumber);
 
-        // Update device status
         $device->update([
             ...$metadataUpdates,
+            'uid' => $binUid,
+            'name' => $device->name ?: "Bin #{$binNumber}",
+            'parent_device_id' => $parentDeviceId,
+            'bin_number' => $binNumber,
+            'is_active' => true,
             'last_seen_at' => now(),
             'battery_percent' => $batteryPercent,
         ]);
+
+        $this->removeSupersededDemoSlot($device);
 
         // Derive values from raw sensor data
         $fillPercent = $this->deriveFillPercent($binData['distance_cm']);
@@ -152,6 +146,51 @@ class EspController extends Controller
             'gas_level' => $gasLevel,
             'collection_detected' => $collectionDetected,
         ];
+    }
+
+    private function resolveBinDevice(string $parentDeviceId, int $binNumber, string $binUid): Device
+    {
+        $device = Device::query()
+            ->where('parent_device_id', $parentDeviceId)
+            ->where('bin_number', $binNumber)
+            ->first();
+
+        if ($device) {
+            return $device;
+        }
+
+        $device = Device::query()
+            ->where('uid', $binUid)
+            ->first();
+
+        if ($device) {
+            return $device;
+        }
+
+        return Device::create([
+            'uid' => $binUid,
+            'name' => "Bin #{$binNumber}",
+            'location' => 'Unassigned Location',
+            'parent_device_id' => $parentDeviceId,
+            'bin_number' => $binNumber,
+            'is_active' => true,
+        ]);
+    }
+
+    private function removeSupersededDemoSlot(Device $device): void
+    {
+        $defaultUid = Device::defaultUidForBin($device->bin_number);
+
+        if (!$defaultUid) {
+            return;
+        }
+
+        Device::query()
+            ->whereKeyNot($device->id)
+            ->whereNull('parent_device_id')
+            ->where('bin_number', $device->bin_number)
+            ->where('uid', $defaultUid)
+            ->delete();
     }
 
     private function defaultLocationUpdates(Device $device, int $binNumber): array
