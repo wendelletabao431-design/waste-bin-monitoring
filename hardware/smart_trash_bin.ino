@@ -36,15 +36,16 @@ const char* serverURL = "http://192.168.1.100/api/bin-data";
 // If you change them here, update the backend too!
 // CALIBRATION SOURCE: Raw Values = Calibration.docx
 
-#define EMPTY_DISTANCE_CM 59.0   // Ultrasonic: reading when bin is empty (cm)
-#define FULL_DISTANCE_CM  4.0    // Ultrasonic: reading when bin is full (cm)
-#define OFFSET_CM         3.5    // Ultrasonic: correction offset (cm)
+#define EMPTY_DISTANCE_BIN1_CM 58.7f  // Ultrasonic Bin 1: empty distance
+#define FULL_DISTANCE_BIN1_CM  10.0f  // Ultrasonic Bin 1: full distance
+#define EMPTY_DISTANCE_BIN2_CM 48.3f  // Ultrasonic Bin 2: empty distance
+#define FULL_DISTANCE_BIN2_CM  10.0f  // Ultrasonic Bin 2: full distance
 
-#define SCALE_FACTOR_BIN1 119800.0  // HX711 Bin 1: raw units per kg
-#define SCALE_FACTOR_BIN2 117786.0  // HX711 Bin 2: raw units per kg
-#define RAW_EMPTY_BIN1    451977    // HX711 Bin 1: raw reading when empty
-#define RAW_EMPTY_BIN2    -491000   // HX711 Bin 2: raw reading when empty
-#define MAX_WEIGHT_KG     20.0      // Maximum weight capacity
+#define SCALE_FACTOR_BIN1 90.4f    // HX711 Bin 1: raw units per gram
+#define SCALE_FACTOR_BIN2 92.6f    // HX711 Bin 2: raw units per gram
+#define RAW_EMPTY_BIN1    514375L  // HX711 Bin 1: raw reading when empty
+#define RAW_EMPTY_BIN2    -480493L // HX711 Bin 2: raw reading when empty
+#define MAX_WEIGHT_KG     20.0f    // Maximum weight capacity
 
 #define MQ_NORMAL_MAX     300    // Gas: normal air max (100-300)
 #define MQ_ELEVATED_MIN   300    // Gas: elevated threshold
@@ -109,13 +110,16 @@ float readUltrasonicCM(uint8_t trig, uint8_t echo) {
  * Calculate fill percentage from distance (for serial debug only)
  * Note: Backend does this calculation - this is just for local display
  * 
- * Formula: (empty - distance - offset) / (empty - full) * 100
+ * Formula: (empty - distance) / (empty - full) * 100
  */
-float levelPercent(float d) {
-  float correctedDistance = d + OFFSET_CM;
+float levelPercent(float d, float emptyDistance, float fullDistance) {
+  if (d < 0) {
+    return 0.0f;
+  }
+
   float level =
-    (EMPTY_DISTANCE_CM - correctedDistance) /
-    (EMPTY_DISTANCE_CM - FULL_DISTANCE_CM) * 100.0f;
+    (emptyDistance - d) /
+    (emptyDistance - fullDistance) * 100.0f;
   return constrain(level, 0.0f, 100.0f);
 }
 
@@ -249,9 +253,9 @@ void loop() {
     long rawW2 = scale2.read_average(5);
 
     // Calculated weight using calibration formula (for serial debug only)
-    // Formula: (raw - empty_raw) / scale
-    float w1kg = constrain((rawW1 - RAW_EMPTY_BIN1) / SCALE_FACTOR_BIN1, 0.0f, MAX_WEIGHT_KG);
-    float w2kg = constrain((rawW2 - RAW_EMPTY_BIN2) / SCALE_FACTOR_BIN2, 0.0f, MAX_WEIGHT_KG);
+    // Formula: ((raw - empty_raw) / scale_raw_per_gram) / 1000
+    float w1kg = constrain(((rawW1 - RAW_EMPTY_BIN1) / SCALE_FACTOR_BIN1) / 1000.0f, 0.0f, MAX_WEIGHT_KG);
+    float w2kg = constrain(((rawW2 - RAW_EMPTY_BIN2) / SCALE_FACTOR_BIN2) / 1000.0f, 0.0f, MAX_WEIGHT_KG);
 
     // MQ gas sensors (raw ADC values)
     int gas1 = analogRead(MQ1);
@@ -272,7 +276,7 @@ void loop() {
 
     Serial.println("\nBIN 1:");
     Serial.print("  Distance (cm): "); Serial.println(d1);
-    Serial.print("  Level (%): "); Serial.println(d1 >= 0 ? levelPercent(d1) : 0);
+    Serial.print("  Level (%): "); Serial.println(levelPercent(d1, EMPTY_DISTANCE_BIN1_CM, FULL_DISTANCE_BIN1_CM));
     Serial.print("  Weight RAW: "); Serial.println(rawW1);
     Serial.print("  Weight (kg): "); Serial.println(w1kg, 2);
     Serial.print("  Gas RAW: "); Serial.println(gas1);
@@ -287,7 +291,7 @@ void loop() {
 
     Serial.println("\nBIN 2:");
     Serial.print("  Distance (cm): "); Serial.println(d2);
-    Serial.print("  Level (%): "); Serial.println(d2 >= 0 ? levelPercent(d2) : 0);
+    Serial.print("  Level (%): "); Serial.println(levelPercent(d2, EMPTY_DISTANCE_BIN2_CM, FULL_DISTANCE_BIN2_CM));
     Serial.print("  Weight RAW: "); Serial.println(rawW2);
     Serial.print("  Weight (kg): "); Serial.println(w2kg, 2);
     Serial.print("  Gas RAW: "); Serial.println(gas2);

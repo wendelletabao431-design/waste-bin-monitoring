@@ -99,7 +99,7 @@ class EspController extends Controller
         $this->removeSupersededDemoSlot($device);
 
         // Derive values from raw sensor data
-        $fillPercent = $this->deriveFillPercent($binData['distance_cm']);
+        $fillPercent = $this->deriveFillPercent($binData['distance_cm'], $binNumber);
         $weightKg = $this->deriveWeight($binData['hx711_raw'], $binNumber);
         $gasLevel = $this->deriveGasLevel($binData['mq_raw']);
 
@@ -213,35 +213,41 @@ class EspController extends Controller
     /**
      * Derive fill percentage from ultrasonic distance
      * 
-     * Formula: fill% = (empty_distance - actual_distance - offset) / (empty_distance - full_distance) * 100
-     * 
-     * Calibration values from Raw Values = Calibration.docx:
-     * - Empty distance: 59 cm
-     * - Full distance: 4 cm
-     * - Offset: 3.5 cm (correction factor)
+     * Formula: fill% = (empty_distance - actual_distance) / (empty_distance - full_distance) * 100
+     *
+     * Calibration values:
+     * - Bin 1: empty = 58.7 cm, full = 10.0 cm
+     * - Bin 2: empty = 48.3 cm, full = 10.0 cm
      */
-    private function deriveFillPercent(float $distanceCm): float
+    private function deriveFillPercent(float $distanceCm, int $binNumber): float
     {
         // Handle sensor error (returns -1)
         if ($distanceCm < 0) {
-            Log::warning("Ultrasonic sensor error: negative distance", ['distance' => $distanceCm]);
+            Log::warning("Ultrasonic sensor error: negative distance", [
+                'bin' => $binNumber,
+                'distance' => $distanceCm,
+            ]);
             return 0;
         }
 
-        $emptyDistance = config('sensors.empty_distance_cm', 59.0);
-        $fullDistance = config('sensors.full_distance_cm', 4.0);
-        $offset = config('sensors.offset_cm', 3.5);
+        $defaults = $binNumber === 1
+            ? ['empty' => 58.7, 'full' => 10.0]
+            : ['empty' => 48.3, 'full' => 10.0];
 
-        // Apply offset correction
-        $correctedDistance = $distanceCm + $offset;
+        $emptyDistance = config("sensors.ultrasonic.bin_{$binNumber}.empty_distance_cm", $defaults['empty']);
+        $fullDistance = config("sensors.ultrasonic.bin_{$binNumber}.full_distance_cm", $defaults['full']);
 
         // Avoid division by zero
         if ($emptyDistance <= $fullDistance) {
-            Log::error("Invalid ultrasonic calibration: empty_distance must be > full_distance");
+            Log::error("Invalid ultrasonic calibration: empty_distance must be > full_distance", [
+                'bin' => $binNumber,
+                'empty_distance' => $emptyDistance,
+                'full_distance' => $fullDistance,
+            ]);
             return 0;
         }
 
-        $percent = (($emptyDistance - $correctedDistance) / ($emptyDistance - $fullDistance)) * 100;
+        $percent = (($emptyDistance - $distanceCm) / ($emptyDistance - $fullDistance)) * 100;
         
         // Clamp between 0 and 100
         return max(0, min(100, $percent));
@@ -250,11 +256,11 @@ class EspController extends Controller
     /**
      * Derive weight in kg from HX711 raw value
      * 
-     * Formula: weight_kg = (hx711_raw - raw_empty) / scale
-     * 
-     * Calibration values from Raw Values = Calibration.docx:
-     * Bin 1: raw_empty = 451,977, scale = 119,800
-     * Bin 2: raw_empty = -491,000, scale = 117,786
+     * Formula: weight_kg = ((hx711_raw - raw_empty) / scale_raw_per_gram) / 1000
+     *
+     * Calibration values:
+     * Bin 1: raw_empty = 514,375, scale = 90.4 raw/g
+     * Bin 2: raw_empty = -480,493, scale = 92.6 raw/g
      * 
      * @param float $hx711Raw Raw HX711 reading
      * @param int $binNumber 1 or 2 to select correct calibration
@@ -263,14 +269,12 @@ class EspController extends Controller
     {
         $maxWeight = config('sensors.max_weight_kg', 20.0);
         
-        // Select calibration based on bin number
-        if ($binNumber === 1) {
-            $rawEmpty = config('sensors.raw_empty_bin1', 451977);
-            $scale = config('sensors.scale_bin1', 119800.0);
-        } else {
-            $rawEmpty = config('sensors.raw_empty_bin2', -491000);
-            $scale = config('sensors.scale_bin2', 117786.0);
-        }
+        $defaults = $binNumber === 1
+            ? ['raw_empty' => 514375, 'scale' => 90.4]
+            : ['raw_empty' => -480493, 'scale' => 92.6];
+
+        $rawEmpty = config("sensors.load_cell.bin_{$binNumber}.raw_empty", $defaults['raw_empty']);
+        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_gram", $defaults['scale']);
 
         // Validate scale factor
         if ($scale == 0) {
@@ -279,14 +283,14 @@ class EspController extends Controller
         }
 
         // Calculate weight using calibration formula
-        $weight = ($hx711Raw - $rawEmpty) / $scale;
+        $weight = (($hx711Raw - $rawEmpty) / $scale) / 1000;
         
         // Log calculation for debugging
         Log::debug("Weight calculation", [
             'bin' => $binNumber,
             'raw' => $hx711Raw,
             'raw_empty' => $rawEmpty,
-            'scale' => $scale,
+            'scale_raw_per_gram' => $scale,
             'calculated_kg' => $weight
         ]);
         

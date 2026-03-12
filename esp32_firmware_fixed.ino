@@ -15,16 +15,17 @@ const char* deviceID = "ESP32_STATION_01";
 
 /* ================= CALIBRATION ================= */
 // CALIBRATION SOURCE: Raw Values = Calibration.docx
-#define EMPTY_DISTANCE_CM 59.0   // Ultrasonic: reading when bin is empty
-#define FULL_DISTANCE_CM  4.0    // Ultrasonic: reading when bin is full
-#define OFFSET_CM         3.5    // Ultrasonic: correction offset
+#define EMPTY_DISTANCE_BIN1_CM 58.7f  // Ultrasonic Bin 1: empty distance
+#define FULL_DISTANCE_BIN1_CM  10.0f  // Ultrasonic Bin 1: full distance
+#define EMPTY_DISTANCE_BIN2_CM 48.3f  // Ultrasonic Bin 2: empty distance
+#define FULL_DISTANCE_BIN2_CM  10.0f  // Ultrasonic Bin 2: full distance
 
 // HX711 calibration (per bin)
-#define SCALE_FACTOR_BIN1 119800.0  // Bin 1: raw units per kg
-#define SCALE_FACTOR_BIN2 117786.0  // Bin 2: raw units per kg
-#define RAW_EMPTY_BIN1    451977    // Bin 1: raw reading when empty
-#define RAW_EMPTY_BIN2    -491000   // Bin 2: raw reading when empty
-#define MAX_WEIGHT_KG     20.0
+#define SCALE_FACTOR_BIN1 90.4f    // Bin 1: raw units per gram
+#define SCALE_FACTOR_BIN2 92.6f    // Bin 2: raw units per gram
+#define RAW_EMPTY_BIN1    514375L  // Bin 1: raw reading when empty
+#define RAW_EMPTY_BIN2    -480493L // Bin 2: raw reading when empty
+#define MAX_WEIGHT_KG     20.0f
 
 #define SLEEP_TIME_SEC 3600        // 1 hour sleep
 
@@ -70,10 +71,11 @@ float readUltrasonicCM(uint8_t trig, uint8_t echo) {
   return duration * 0.0343 / 2.0;
 }
 
-float levelPercent(float d) {
-  float correctedDistance = d + OFFSET_CM;
-  float pct = (EMPTY_DISTANCE_CM - correctedDistance) /
-              (EMPTY_DISTANCE_CM - FULL_DISTANCE_CM) * 100.0;
+float levelPercent(float d, float emptyDistance, float fullDistance) {
+  if (d < 0) return 0.0f;
+
+  float pct = (emptyDistance - d) /
+              (emptyDistance - fullDistance) * 100.0f;
   return constrain(pct, 0.0, 100.0);
 }
 
@@ -195,9 +197,9 @@ void setup() {
   long w2_raw = scale2.read_average(10);
 
   // Calculated weight using calibration formula (for serial debug)
-  // Formula: (raw - empty_raw) / scale
-  float w1kg = constrain((w1_raw - RAW_EMPTY_BIN1) / SCALE_FACTOR_BIN1, 0.0f, MAX_WEIGHT_KG);
-  float w2kg = constrain((w2_raw - RAW_EMPTY_BIN2) / SCALE_FACTOR_BIN2, 0.0f, MAX_WEIGHT_KG);
+  // Formula: ((raw - empty_raw) / scale_raw_per_gram) / 1000
+  float w1kg = constrain(((w1_raw - RAW_EMPTY_BIN1) / SCALE_FACTOR_BIN1) / 1000.0f, 0.0f, MAX_WEIGHT_KG);
+  float w2kg = constrain(((w2_raw - RAW_EMPTY_BIN2) / SCALE_FACTOR_BIN2) / 1000.0f, 0.0f, MAX_WEIGHT_KG);
 
   int gas1_raw = analogRead(MQ1_AO);
   int gas2_raw = analogRead(MQ2_AO);
@@ -211,7 +213,7 @@ void setup() {
   Serial.println("\n===== SMART BIN STATUS =====");
 
   Serial.print("BIN1 Level (%): ");
-  Serial.println(levelPercent(d1));
+  Serial.println(levelPercent(d1, EMPTY_DISTANCE_BIN1_CM, FULL_DISTANCE_BIN1_CM));
 
   Serial.print("BIN1 Weight (kg): ");
   Serial.println(w1kg, 2);
@@ -220,7 +222,7 @@ void setup() {
   Serial.println(gasDetected ? "FLAMMABLE DETECTED" : "NORMAL");
 
   Serial.print("BIN2 Level (%): ");
-  Serial.println(levelPercent(d2));
+  Serial.println(levelPercent(d2, EMPTY_DISTANCE_BIN2_CM, FULL_DISTANCE_BIN2_CM));
 
   Serial.print("BIN2 Weight (kg): ");
   Serial.println(w2kg, 2);
