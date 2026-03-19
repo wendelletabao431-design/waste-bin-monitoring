@@ -1,331 +1,464 @@
-/**
- * Smart Trash Bin ESP32 Firmware
- * 
- * UPDATED VERSION - Compatible with Laravel Backend
- * 
- * Changes from original:
- * 1. Added device_id (MAC address) to payload
- * 2. Updated serverURL to match backend endpoint
- * 3. Added response handling for debugging
- * 
- * Hardware:
- * - ESP32 with WiFi
- * - 2x Ultrasonic sensors (HC-SR04)
- * - 2x HX711 load cells
- * - 2x MQ gas sensors
- * - Battery voltage monitoring
- * - Power source detection (Solar/Battery)
- */
-
-#include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_INA219.h>
 #include "HX711.h"
 
-/* ================= WIFI CONFIGURATION ================= */
-// TODO: Update these with your actual credentials
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
+/* WIFI */
 
-// IMPORTANT: Update this to your Laravel server IP/domain
-// Format: http://YOUR_SERVER_IP/api/bin-data
-const char* serverURL = "http://192.168.1.100/api/bin-data";
+const char* ssid = "TABAO_FAM";
+const char* password = "JOAN062199";
+const char* serverURL = "https://smart-trash-bin-production.up.railway.app/api/bin-data";
+const char* fallbackDeviceID = "ESP32_SMART_BIN";
 
-/* ================= CALIBRATION CONSTANTS ================= */
-// These values are mirrored in Laravel config/sensors.php
-// If you change them here, update the backend too!
-// CALIBRATION SOURCE: Raw Values = Calibration.docx
+/* LED */
 
-#define EMPTY_DISTANCE_BIN1_CM 58.7f  // Ultrasonic Bin 1: empty distance
-#define FULL_DISTANCE_BIN1_CM  10.0f  // Ultrasonic Bin 1: full distance
-#define EMPTY_DISTANCE_BIN2_CM 48.3f  // Ultrasonic Bin 2: empty distance
-#define FULL_DISTANCE_BIN2_CM  10.0f  // Ultrasonic Bin 2: full distance
+#define LED_POWER 27
+#define LED_BLUE 2
+#define LED_WIFI 4
 
-#define SCALE_FACTOR_BIN1 90.4f    // HX711 Bin 1: raw units per gram
-#define SCALE_FACTOR_BIN2 92.6f    // HX711 Bin 2: raw units per gram
-#define RAW_EMPTY_BIN1    514375L  // HX711 Bin 1: raw reading when empty
-#define RAW_EMPTY_BIN2    -480493L // HX711 Bin 2: raw reading when empty
-#define MAX_WEIGHT_KG     20.0f    // Maximum weight capacity
+/* I2C */
 
-#define MQ_NORMAL_MAX     300    // Gas: normal air max (100-300)
-#define MQ_ELEVATED_MIN   300    // Gas: elevated threshold
-#define MQ_DANGEROUS_MIN  600    // Gas: dangerous/flammable threshold (600-900+)
+#define SDA_PIN 13
+#define SCL_PIN 14
 
-#define BATTERY_MAX_V 12.6       // Full battery voltage (3S Li-ion)
-#define BATTERY_MIN_V 9.0        // Empty battery voltage (3S Li-ion)
+/* ULTRASONIC */
 
-/* ================= LED INDICATOR PINS ================= */
-#define LED_POWER 2              // Power indicator (always on)
-#define LED_WIFI  4              // WiFi status (blinks when connecting)
-#define LED_SOURCE 26            // Power source indicator
-#define POWER_SRC_PIN 27         // HIGH = Battery, LOW = Solar
-
-/* ================= BIN 1 SENSOR PINS ================= */
 #define TRIG1 5
 #define ECHO1 18
-#define HX1_DT 19
-#define HX1_SCK 23
-#define MQ1 34
-
-/* ================= BIN 2 SENSOR PINS ================= */
 #define TRIG2 17
 #define ECHO2 16
+
+/* LOAD CELLS */
+
+#define HX1_DT 19
+#define HX1_SCK 23
 #define HX2_DT 21
 #define HX2_SCK 22
-#define MQ2 32
 
-/* ================= BATTERY MONITORING ================= */
-#define BATTERY_PIN 35
+/* GAS */
 
-/* ================= TIMING ================= */
-unsigned long lastSendTime = 0;
-const unsigned long SEND_INTERVAL = 10000; // Send data every 10 seconds
+#define MQ1_AO 34
+#define MQ2_AO 32
 
-unsigned long lastBlink = 0;
-bool blinkState = false;
+/* BATTERY */
 
-/* ================= SENSOR OBJECTS ================= */
+#define BATTERY_PIN 33
+
+/* CALIBRATION */
+
+#define BIN1_EMPTY 58.7
+#define BIN2_EMPTY 48.3
+#define BIN_FULL 10
+
+#define SCALE1 90.4
+#define SCALE2 92.6
+#define RAW_EMPTY_BIN1 514375L
+#define RAW_EMPTY_BIN2 -480493L
+#define MAX_WEIGHT_KG 20.0
+
+#define GAS_THRESHOLD 500
+
+/* OBJECTS */
+
+LiquidCrystal_I2C lcd(0x27,16,2);
+Adafruit_INA219 ina219;
 HX711 scale1;
 HX711 scale2;
 
-/* ================= HELPER FUNCTIONS ================= */
+/* TIMERS */
 
-/**
- * Read distance from ultrasonic sensor
- * @return Distance in centimeters, or -1 if error
- */
-float readUltrasonicCM(uint8_t trig, uint8_t echo) {
-  digitalWrite(trig, LOW);
-  delayMicroseconds(2);
-  digitalWrite(trig, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(trig, LOW);
+unsigned long solarTimer = 0;
+unsigned long batteryTimer = 0;
 
-  long duration = pulseIn(echo, HIGH, 30000);
-  if (duration == 0) return -1;
-  return duration * 0.0343f / 2.0f;
-}
+/* RAW SENSOR STATE */
 
-/**
- * Calculate fill percentage from distance (for serial debug only)
- * Note: Backend does this calculation - this is just for local display
- * 
- * Formula: (empty - distance) / (empty - full) * 100
- */
-float levelPercent(float d, float emptyDistance, float fullDistance) {
-  if (d < 0) {
-    return 0.0f;
-  }
+float bin1DistanceCm = -1;
+float bin2DistanceCm = -1;
+float bin1Level = 0;
+float bin2Level = 0;
+long bin1WeightRaw = 0;
+long bin2WeightRaw = 0;
+float bin1WeightKg = 0;
+float bin2WeightKg = 0;
+int gas1 = 0;
+int gas2 = 0;
+int batteryAdc = 0;
 
-  float level =
-    (emptyDistance - d) /
-    (emptyDistance - fullDistance) * 100.0f;
-  return constrain(level, 0.0f, 100.0f);
-}
+/* ================= ULTRASONIC FILTER ================= */
 
-/**
- * Convert a raw ADC battery reading to battery voltage.
- */
-float batteryVoltageFromRaw(int raw) {
-  return (raw / 4095.0f) * 3.3f * 4.21f;
-}
+float readUltrasonicFiltered(int trig,int echo){
 
-/**
- * Calculate battery percentage (for serial debug only)
- * Note: Backend does this calculation - this is just for local display
- */
-float batteryPercent(float voltage) {
-  float percent =
-    (voltage - BATTERY_MIN_V) /
-    (BATTERY_MAX_V - BATTERY_MIN_V) * 100.0f;
-  return constrain(percent, 0.0f, 100.0f);
-}
+  float total = 0;
+  int count = 0;
 
-/**
- * Send JSON payload to Laravel backend
- * @param payload JSON string to send
- */
-void sendData(const String& payload) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected - skipping send");
-    return;
-  }
-  
-  HTTPClient http;
-  http.begin(serverURL);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  
-  Serial.println("Sending to: " + String(serverURL));
-  Serial.println("Payload: " + payload);
-  
-  int httpCode = http.POST(payload);
-  
-  if (httpCode > 0) {
-    Serial.printf("HTTP Response: %d\n", httpCode);
-    if (httpCode == HTTP_CODE_OK) {
-      String response = http.getString();
-      Serial.println("Response: " + response);
+  for(int i=0;i<5;i++){
+
+    digitalWrite(trig,LOW);
+    delayMicroseconds(2);
+
+    digitalWrite(trig,HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trig,LOW);
+
+    long duration = pulseIn(echo,HIGH,30000);
+
+    if(duration>0){
+
+      float dist = duration*0.0343/2;
+
+      total += dist;
+      count++;
+
     }
-  } else {
-    Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
+
+    delay(20);
+
   }
-  
+
+  if(count==0) return -1;
+
+  return total/count;
+
+}
+
+/* ================= BIN LEVEL ================= */
+
+float getPercent(float dist,float empty){
+
+  if(dist < 0){
+    return 0;
+  }
+
+  float level = (empty-dist)/(empty-BIN_FULL)*100;
+
+  return constrain(level,0,100);
+
+}
+
+float getWeightKg(long rawValue,long rawEmpty,float scalePerGram){
+
+  if(scalePerGram == 0){
+    return 0;
+  }
+
+  float weightKg = ((rawValue - rawEmpty) / scalePerGram) / 1000.0;
+
+  return constrain(weightKg,0,MAX_WEIGHT_KG);
+
+}
+
+String getDeviceID(){
+
+  String deviceID = WiFi.macAddress();
+
+  if(deviceID.length() == 0 || deviceID == "00:00:00:00:00:00"){
+    return String(fallbackDeviceID);
+  }
+
+  return deviceID;
+
+}
+
+/* ================= WIFI AUTO RECONNECT ================= */
+
+void maintainWiFi(){
+
+  if(WiFi.status()!=WL_CONNECTED){
+
+    digitalWrite(LED_WIFI,LOW);
+
+    WiFi.disconnect();
+    WiFi.begin(ssid,password);
+
+    unsigned long start = millis();
+
+    while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
+
+      digitalWrite(LED_WIFI,HIGH);
+      delay(200);
+
+      digitalWrite(LED_WIFI,LOW);
+      delay(200);
+
+    }
+
+  }
+
+  if(WiFi.status()==WL_CONNECTED){
+
+    digitalWrite(LED_WIFI,HIGH);
+
+  }
+
+}
+
+void readAllSensors(){
+
+  bin1DistanceCm = readUltrasonicFiltered(TRIG1,ECHO1);
+  bin2DistanceCm = readUltrasonicFiltered(TRIG2,ECHO2);
+
+  bin1Level = getPercent(bin1DistanceCm,BIN1_EMPTY);
+  bin2Level = getPercent(bin2DistanceCm,BIN2_EMPTY);
+
+  bin1WeightRaw = scale1.read_average(10);
+  bin2WeightRaw = scale2.read_average(10);
+
+  bin1WeightKg = getWeightKg(bin1WeightRaw,RAW_EMPTY_BIN1,SCALE1);
+  bin2WeightKg = getWeightKg(bin2WeightRaw,RAW_EMPTY_BIN2,SCALE2);
+
+  gas1 = analogRead(MQ1_AO);
+  gas2 = analogRead(MQ2_AO);
+  batteryAdc = analogRead(BATTERY_PIN);
+
+}
+
+/* ================= SEND DATA ================= */
+
+void sendData(String eventTag=""){
+
+  maintainWiFi();
+
+  if(WiFi.status()!=WL_CONNECTED){
+
+    Serial.println("WiFi not connected. Skipping backend send.");
+    return;
+
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+
+  http.setTimeout(10000);
+
+  if(!http.begin(client,serverURL)){
+
+    Serial.println("Failed to initialize HTTPS connection.");
+    return;
+
+  }
+
+  http.addHeader("Content-Type","application/json");
+  http.addHeader("Accept","application/json");
+
+  String json="{";
+
+  if(eventTag!=""){
+    json+="\"event\":\""+eventTag+"\",";
+  }
+
+  json+="\"device_id\":\""+getDeviceID()+"\",";
+  json+="\"battery_adc\":"+String(batteryAdc)+",";
+  json+="\"bin_1\":{";
+  json+="\"distance_cm\":"+String(bin1DistanceCm,1)+",";
+  json+="\"hx711_raw\":"+String(bin1WeightRaw)+",";
+  json+="\"mq_raw\":"+String(gas1);
+  json+="},";
+  json+="\"bin_2\":{";
+  json+="\"distance_cm\":"+String(bin2DistanceCm,1)+",";
+  json+="\"hx711_raw\":"+String(bin2WeightRaw)+",";
+  json+="\"mq_raw\":"+String(gas2);
+  json+="}";
+
+  json+="}";
+
+  Serial.println("Sending payload to backend:");
+  Serial.println(json);
+
+  int httpCode = http.POST(json);
+
+  Serial.print("HTTP status: ");
+  Serial.println(httpCode);
+
+  if(httpCode > 0){
+
+    String response = http.getString();
+    Serial.println("Backend response:");
+    Serial.println(response);
+
+  } else {
+
+    Serial.print("HTTP error: ");
+    Serial.println(http.errorToString(httpCode));
+
+  }
+
   http.end();
+
 }
 
 /* ================= SETUP ================= */
-void setup() {
+
+void setup(){
+
   Serial.begin(115200);
-  Serial.println("\n=== Smart Trash Bin System ===");
 
-  // Configure GPIO pins
-  pinMode(TRIG1, OUTPUT);
-  pinMode(ECHO1, INPUT);
-  pinMode(TRIG2, OUTPUT);
-  pinMode(ECHO2, INPUT);
+  pinMode(TRIG1,OUTPUT);
+  pinMode(ECHO1,INPUT);
 
-  pinMode(LED_POWER, OUTPUT);
-  pinMode(LED_WIFI, OUTPUT);
-  pinMode(LED_SOURCE, OUTPUT);
-  pinMode(POWER_SRC_PIN, INPUT);
+  pinMode(TRIG2,OUTPUT);
+  pinMode(ECHO2,INPUT);
 
-  // Power LED always on
-  digitalWrite(LED_POWER, HIGH);
+  pinMode(LED_POWER,OUTPUT);
+  pinMode(LED_BLUE,OUTPUT);
+  pinMode(LED_WIFI,OUTPUT);
+  pinMode(BATTERY_PIN,INPUT);
 
-  // Initialize load cells
-  Serial.println("Initializing HX711 sensors...");
-  scale1.begin(HX1_DT, HX1_SCK);
-  scale1.set_scale(SCALE_FACTOR_BIN1);
+  digitalWrite(LED_POWER,HIGH);
+
+  Wire.begin(SDA_PIN,SCL_PIN);
+
+  lcd.init();
+  lcd.backlight();
+
+  ina219.begin();
+
+  scale1.begin(HX1_DT,HX1_SCK);
+  scale2.begin(HX2_DT,HX2_SCK);
+
+  scale1.set_scale(SCALE1);
+  scale2.set_scale(SCALE2);
+
   scale1.tare();
-
-  scale2.begin(HX2_DT, HX2_SCK);
-  scale2.set_scale(SCALE_FACTOR_BIN2);
   scale2.tare();
-  Serial.println("HX711 sensors ready");
 
-  // Connect to WiFi
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(ssid);
-  
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    // Blink WiFi LED while connecting
-    digitalWrite(LED_WIFI, millis() % 600 < 300);
-    delay(100);
-  }
-  
-  digitalWrite(LED_WIFI, HIGH);
-  Serial.println("WiFi connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("MAC Address: ");
-  Serial.println(WiFi.macAddress());
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid,password);
+
 }
 
-/* ================= MAIN LOOP ================= */
-void loop() {
-  // Update power source LED
-  bool onBattery = digitalRead(POWER_SRC_PIN);
-  if (!onBattery) {
-    // Solar power - blink LED
-    if (millis() - lastBlink >= 300) {
-      blinkState = !blinkState;
-      digitalWrite(LED_SOURCE, blinkState);
-      lastBlink = millis();
+/* ================= LOOP ================= */
+
+void loop(){
+
+  float solarCurrent = ina219.getCurrent_mA()/1000.0;
+
+  bool solarMode = solarCurrent > 0.1;
+
+  gas1 = analogRead(MQ1_AO);
+  gas2 = analogRead(MQ2_AO);
+
+  bool gasDetected = (gas1>=GAS_THRESHOLD || gas2>=GAS_THRESHOLD);
+
+  /* GAS ALERT */
+
+  if(gasDetected){
+
+    lcd.backlight();
+    lcd.clear();
+    lcd.print("Flammable Gas");
+
+    delay(5000);
+
+    readAllSensors();
+
+    sendData("gas_detected");
+
+    while(gasDetected){
+
+      delay(5000);
+
+      gas1 = analogRead(MQ1_AO);
+      gas2 = analogRead(MQ2_AO);
+
+      gasDetected = (gas1>=GAS_THRESHOLD || gas2>=GAS_THRESHOLD);
+
     }
-  } else {
-    // Battery power - solid LED
-    digitalWrite(LED_SOURCE, HIGH);
+
+    readAllSensors();
+    sendData("gas_normal");
+
   }
 
-  // Send data at regular intervals
-  if (millis() - lastSendTime >= SEND_INTERVAL) {
-    
-    /* ===== READ ALL SENSORS (RAW VALUES) ===== */
-    
-    // Ultrasonic distance sensors
-    float d1 = readUltrasonicCM(TRIG1, ECHO1);
-    float d2 = readUltrasonicCM(TRIG2, ECHO2);
+  /* SOLAR MODE */
 
-    // HX711 load cells (raw values for backend)
-    long rawW1 = scale1.read_average(5);
-    long rawW2 = scale2.read_average(5);
+  if(solarMode){
 
-    // Calculated weight using calibration formula (for serial debug only)
-    // Formula: ((raw - empty_raw) / scale_raw_per_gram) / 1000
-    float w1kg = constrain(((rawW1 - RAW_EMPTY_BIN1) / SCALE_FACTOR_BIN1) / 1000.0f, 0.0f, MAX_WEIGHT_KG);
-    float w2kg = constrain(((rawW2 - RAW_EMPTY_BIN2) / SCALE_FACTOR_BIN2) / 1000.0f, 0.0f, MAX_WEIGHT_KG);
+    digitalWrite(LED_BLUE,HIGH);
 
-    // MQ gas sensors (raw ADC values)
-    int gas1 = analogRead(MQ1);
-    int gas2 = analogRead(MQ2);
+    lcd.backlight();
 
-    // Battery voltage
-    int battRaw = analogRead(BATTERY_PIN);
-    float battVoltage = batteryVoltageFromRaw(battRaw);
-    float battPct = batteryPercent(battVoltage);
+    if(millis()-solarTimer >= 60000){
 
-    /* ===== SERIAL DEBUG OUTPUT (Interpreted Values) ===== */
-    Serial.println("\n================================");
-    Serial.println("Device ID: " + WiFi.macAddress());
-    Serial.print("Battery (%): "); Serial.println(battPct);
-    Serial.print("Battery (V): "); Serial.println(battVoltage, 2);
-    Serial.print("Battery RAW: "); Serial.println(battRaw);
-    Serial.print("Power Source: "); Serial.println(onBattery ? "BATTERY" : "SOLAR");
+      readAllSensors();
 
-    Serial.println("\nBIN 1:");
-    Serial.print("  Distance (cm): "); Serial.println(d1);
-    Serial.print("  Level (%): "); Serial.println(levelPercent(d1, EMPTY_DISTANCE_BIN1_CM, FULL_DISTANCE_BIN1_CM));
-    Serial.print("  Weight RAW: "); Serial.println(rawW1);
-    Serial.print("  Weight (kg): "); Serial.println(w1kg, 2);
-    Serial.print("  Gas RAW: "); Serial.println(gas1);
-    Serial.print("  Gas Status: "); 
-    if (gas1 >= MQ_DANGEROUS_MIN) {
-      Serial.println("DANGEROUS/FLAMMABLE");
-    } else if (gas1 >= MQ_ELEVATED_MIN) {
-      Serial.println("ELEVATED");
-    } else {
-      Serial.println("NORMAL");
+      Serial.print("BIN 1 Distance (cm): ");
+      Serial.println(bin1DistanceCm);
+      Serial.print("BIN 1 Fill (%): ");
+      Serial.println(bin1Level);
+      Serial.print("BIN 1 Weight Raw: ");
+      Serial.println(bin1WeightRaw);
+      Serial.print("BIN 1 Weight (kg): ");
+      Serial.println(bin1WeightKg,2);
+
+      Serial.print("BIN 2 Distance (cm): ");
+      Serial.println(bin2DistanceCm);
+      Serial.print("BIN 2 Fill (%): ");
+      Serial.println(bin2Level);
+      Serial.print("BIN 2 Weight Raw: ");
+      Serial.println(bin2WeightRaw);
+      Serial.print("BIN 2 Weight (kg): ");
+      Serial.println(bin2WeightKg,2);
+
+      lcd.clear();
+      lcd.print("Data Sent");
+
+      sendData();
+
+      solarTimer = millis();
+
     }
 
-    Serial.println("\nBIN 2:");
-    Serial.print("  Distance (cm): "); Serial.println(d2);
-    Serial.print("  Level (%): "); Serial.println(levelPercent(d2, EMPTY_DISTANCE_BIN2_CM, FULL_DISTANCE_BIN2_CM));
-    Serial.print("  Weight RAW: "); Serial.println(rawW2);
-    Serial.print("  Weight (kg): "); Serial.println(w2kg, 2);
-    Serial.print("  Gas RAW: "); Serial.println(gas2);
-    Serial.print("  Gas Status: "); 
-    if (gas2 >= MQ_DANGEROUS_MIN) {
-      Serial.println("DANGEROUS/FLAMMABLE");
-    } else if (gas2 >= MQ_ELEVATED_MIN) {
-      Serial.println("ELEVATED");
-    } else {
-      Serial.println("NORMAL");
-    }
-
-    /* ===== BUILD JSON PAYLOAD ===== */
-    // CRITICAL: Include device_id for backend identification
-    // Backend handles all derivation except the ADC-to-voltage conversion.
-    
-    String payload = "{";
-    payload += "\"device_id\":\"" + WiFi.macAddress() + "\",";  // <-- REQUIRED!
-    payload += "\"battery_voltage\":" + String(battVoltage, 3) + ",";
-    payload += "\"bin_1\":{";
-    payload += "\"distance_cm\":" + String(d1, 1) + ",";
-    payload += "\"hx711_raw\":" + String(rawW1) + ",";
-    payload += "\"mq_raw\":" + String(gas1);
-    payload += "},";
-    payload += "\"bin_2\":{";
-    payload += "\"distance_cm\":" + String(d2, 1) + ",";
-    payload += "\"hx711_raw\":" + String(rawW2) + ",";
-    payload += "\"mq_raw\":" + String(gas2);
-    payload += "}";
-    payload += "}";
-
-    /* ===== SEND TO BACKEND ===== */
-    sendData(payload);
-    
-    lastSendTime = millis();
   }
+
+  /* BATTERY MODE */
+
+  else{
+
+    digitalWrite(LED_BLUE,LOW);
+
+    lcd.noBacklight();
+
+    if(millis()-batteryTimer >= 1200000){
+
+      lcd.backlight();
+      lcd.clear();
+      lcd.print("Data Sent");
+
+      readAllSensors();
+
+      Serial.print("BIN 1 Distance (cm): ");
+      Serial.println(bin1DistanceCm);
+      Serial.print("BIN 1 Fill (%): ");
+      Serial.println(bin1Level);
+      Serial.print("BIN 1 Weight Raw: ");
+      Serial.println(bin1WeightRaw);
+      Serial.print("BIN 1 Weight (kg): ");
+      Serial.println(bin1WeightKg,2);
+
+      Serial.print("BIN 2 Distance (cm): ");
+      Serial.println(bin2DistanceCm);
+      Serial.print("BIN 2 Fill (%): ");
+      Serial.println(bin2Level);
+      Serial.print("BIN 2 Weight Raw: ");
+      Serial.println(bin2WeightRaw);
+      Serial.print("BIN 2 Weight (kg): ");
+      Serial.println(bin2WeightKg,2);
+
+      sendData();
+
+      delay(3000);
+
+      lcd.noBacklight();
+
+      batteryTimer = millis();
+
+    }
+
+  }
+
 }

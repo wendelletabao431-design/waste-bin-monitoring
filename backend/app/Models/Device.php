@@ -8,8 +8,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Device extends Model
 {
     private const DEMO_UIDS = [
-        1 => 'ESP32_001',
-        2 => 'ESP32_002',
+        1 => 'DEMO_BIN_001',
+        2 => 'DEMO_BIN_002',
     ];
 
     private const UNASSIGNED_LOCATIONS = [

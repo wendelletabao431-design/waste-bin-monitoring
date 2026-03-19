@@ -24,7 +24,7 @@ class DatabaseSeeder extends Seeder
         ]);
 
         $device1 = Device::updateOrCreate([
-            'uid' => 'ESP32_001',
+            'uid' => 'DEMO_BIN_001',
         ], [
             'name' => 'Bin #1',
             'location' => 'Cafeteria, Building A-1',
@@ -38,7 +38,7 @@ class DatabaseSeeder extends Seeder
         ]);
 
         $device2 = Device::updateOrCreate([
-            'uid' => 'ESP32_002',
+            'uid' => 'DEMO_BIN_002',
         ], [
             'name' => 'Bin #2',
             'location' => 'Library Entrance',
