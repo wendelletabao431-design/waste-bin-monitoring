@@ -99,7 +99,7 @@ class EspController extends Controller
             'status'          => 'ok',
             'message'         => 'Data received and processed',
             'device_id'       => $parentDeviceId,
-            'battery_voltage' => $batteryVoltage !== null ? round($batteryVoltage, 3) : null,
+            'battery_voltage' => $batteryVoltage !== null ? round($batteryVoltage, 1) : null,
             'battery_percent' => $batteryPercent !== null ? round($batteryPercent, 1) : null,
             'bins'            => $results,
         ]);
@@ -171,8 +171,8 @@ class EspController extends Controller
         return [
             'device_id' => $device->id,
             'uid' => $binUid,
-            'fill_percent' => round($fillPercent, 3),
-            'weight_kg' => round($weightKg, 3),
+            'fill_percent' => round($fillPercent, 1),
+            'weight_kg'    => round($weightKg, 1),
             'gas_level' => $gasLevel,
             'collection_detected' => $collectionDetected,
         ];
