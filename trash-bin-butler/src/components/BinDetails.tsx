@@ -13,6 +13,7 @@ interface BinMetrics {
   last_updated: string
   collections_week: number
   efficiency: string
+  capacity: number
 }
 
 export default function BinDetails({ bin }: BinDetailsProps) {
@@ -131,7 +132,13 @@ export default function BinDetails({ bin }: BinDetailsProps) {
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-xl border border-green-200">
           <p className="text-xs text-green-700 font-semibold uppercase tracking-wide mb-1">Capacity</p>
-          <p className="text-2xl font-extrabold text-green-900">{Math.max(0, 100 - bin.fill)}%</p>
+          {isOffline ? (
+            <p className="text-2xl font-extrabold text-green-400">--</p>
+          ) : metrics ? (
+            <p className="text-2xl font-extrabold text-green-900">{metrics.capacity}%</p>
+          ) : (
+            <div className="h-8 w-12 bg-green-200 rounded animate-pulse my-1" />
+          )}
           <p className="text-xs text-green-600 mt-1">Remaining</p>
         </div>
         <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl border border-blue-200">
