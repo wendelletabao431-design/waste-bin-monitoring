@@ -266,7 +266,7 @@ class DashboardController extends Controller
             'collections_week' => $collectionsWeek,
             'efficiency' => round($efficiency, 3) . '%',
             'efficiency_raw' => round($efficiency, 3),
-            'capacity' => round($capacity, 3),
+            'capacity' => round($capacity, 1),
             'is_online' => $isOnline,
             'bin_number' => $device->bin_number ?? 1,
             'battery_percent' => $device->battery_percent ?? 0,
