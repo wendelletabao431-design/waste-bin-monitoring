@@ -20,58 +20,88 @@ class EspController extends Controller
      */
     public function receiveBinData(Request $request)
     {
-        // 1. Validate the raw payload from ESP32
+        // 1. Validate the raw payload from ESP32.
+        //    bin_1 and bin_2 are OPTIONAL so battery-only payloads
+        //    (sendBatteryOnly from firmware) are accepted without 422.
         $validated = $request->validate([
             'device_id'         => 'required|string|max:50',
-            'battery_voltage'   => 'nullable|required_without:battery_adc|numeric|min:0|max:20',
-            'battery_adc'       => 'nullable|required_without:battery_voltage|numeric|min:0|max:4095',
-            'bin_1'             => 'required|array',
-            'bin_1.distance_cm' => 'required|numeric',
-            'bin_1.hx711_raw'   => 'required|numeric',
-            'bin_1.mq_raw'      => 'required|numeric|min:0',
-            'bin_2'             => 'required|array',
-            'bin_2.distance_cm' => 'required|numeric',
-            'bin_2.hx711_raw'   => 'required|numeric',
-            'bin_2.mq_raw'      => 'required|numeric|min:0',
+            'battery_voltage'   => 'nullable|numeric|min:0|max:20',
+            'battery_adc'       => 'nullable|numeric|min:0|max:4095',
+            'bin_1'             => 'nullable|array',
+            'bin_1.distance_cm' => 'required_with:bin_1|numeric',
+            'bin_1.hx711_raw'   => 'required_with:bin_1|numeric',
+            'bin_1.mq_raw'      => 'required_with:bin_1|numeric|min:0',
+            'bin_2'             => 'nullable|array',
+            'bin_2.distance_cm' => 'required_with:bin_2|numeric',
+            'bin_2.hx711_raw'   => 'required_with:bin_2|numeric',
+            'bin_2.mq_raw'      => 'required_with:bin_2|numeric|min:0',
         ]);
 
         $parentDeviceId = $validated['device_id'];
-        
+
         // 2. Derive battery percentage (shared between both bins)
-        $batteryVoltage = array_key_exists('battery_voltage', $validated) && $validated['battery_voltage'] !== null
-            ? (float) $validated['battery_voltage']
-            : $this->deriveBatteryVoltageFromAdc((int) $validated['battery_adc']);
-        $batteryPercent = $this->deriveBatteryPercent($batteryVoltage);
+        $batteryVoltage = null;
+        if (!empty($validated['battery_voltage'])) {
+            $batteryVoltage = (float) $validated['battery_voltage'];
+        } elseif (!empty($validated['battery_adc'])) {
+            $batteryVoltage = $this->deriveBatteryVoltageFromAdc((int) $validated['battery_adc']);
+        }
+
+        $batteryPercent = $batteryVoltage !== null
+            ? $this->deriveBatteryPercent($batteryVoltage)
+            : null;
 
         Log::info("ESP32 Data Received", [
-            'device_id' => $parentDeviceId,
-            'battery_voltage' => round($batteryVoltage, 3),
-            'battery_adc' => $validated['battery_adc'] ?? null,
+            'device_id'       => $parentDeviceId,
+            'battery_voltage' => $batteryVoltage !== null ? round($batteryVoltage, 3) : null,
             'battery_percent' => $batteryPercent,
+            'has_bin_data'    => isset($validated['bin_1']),
         ]);
 
-        // 3. Process each bin
+        // 3a. Battery-only payload (no bin data) — just refresh battery on known devices
+        if (empty($validated['bin_1']) && empty($validated['bin_2'])) {
+            if ($batteryPercent !== null) {
+                Device::query()
+                    ->where('parent_device_id', $parentDeviceId)
+                    ->update([
+                        'battery_percent' => $batteryPercent,
+                        'last_seen_at'    => now(),
+                    ]);
+            }
+
+            return response()->json([
+                'status'          => 'ok',
+                'message'         => 'Battery updated',
+                'device_id'       => $parentDeviceId,
+                'battery_voltage' => $batteryVoltage !== null ? round($batteryVoltage, 3) : null,
+                'battery_percent' => $batteryPercent !== null ? round($batteryPercent, 1) : null,
+            ]);
+        }
+
+        // 3b. Full sensor payload — process each bin that was sent
         $results = [];
         foreach (['bin_1' => 1, 'bin_2' => 2] as $binKey => $binNumber) {
-            $binData = $validated[$binKey];
-            
+            if (empty($validated[$binKey])) {
+                continue;
+            }
+
             $result = $this->processBinData(
                 $parentDeviceId,
                 $binNumber,
-                $binData,
-                $batteryPercent
+                $validated[$binKey],
+                $batteryPercent ?? 0
             );
-            
+
             $results["bin_{$binNumber}"] = $result;
         }
 
         return response()->json([
-            'status' => 'ok',
-            'message' => 'Data received and processed',
-            'device_id' => $parentDeviceId,
-            'battery_voltage' => round($batteryVoltage, 3),
-            'battery_percent' => round($batteryPercent, 1),
-            'bins' => $results,
+            'status'          => 'ok',
+            'message'         => 'Data received and processed',
+            'device_id'       => $parentDeviceId,
+            'battery_voltage' => $batteryVoltage !== null ? round($batteryVoltage, 3) : null,
+            'battery_percent' => $batteryPercent !== null ? round($batteryPercent, 1) : null,
+            'bins'            => $results,
         ]);
     }
 
@@ -255,76 +285,78 @@ class EspController extends Controller
 
     /**
      * Derive weight in kg from HX711 raw value
-     * 
+     *
      * Formula: weight_kg = ((hx711_raw - raw_empty) / scale_raw_per_gram) / 1000
      *
-     * Calibration values:
-     * Bin 1: raw_empty = 514,375, scale = 90.4 raw/g
-     * Bin 2: raw_empty = -480,493, scale = 92.6 raw/g
-     * 
+     * Calibration values (matching real firmware SCALE1=SCALE2=87.1):
+     * Bin 1: raw_empty = 514,375, scale = 87.1 raw/g
+     * Bin 2: raw_empty = -480,493, scale = 87.1 raw/g
+     *
      * @param float $hx711Raw Raw HX711 reading
-     * @param int $binNumber 1 or 2 to select correct calibration
+     * @param int   $binNumber 1 or 2 to select correct calibration
      */
     private function deriveWeight(float $hx711Raw, int $binNumber): float
     {
         $maxWeight = config('sensors.max_weight_kg', 20.0);
-        
-        $defaults = $binNumber === 1
-            ? ['raw_empty' => 514375, 'scale' => 90.4]
-            : ['raw_empty' => -480493, 'scale' => 92.6];
 
-        $rawEmpty = config("sensors.load_cell.bin_{$binNumber}.raw_empty", $defaults['raw_empty']);
-        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_gram", $defaults['scale']);
-
-        // Validate scale factor
-        if ($scale == 0) {
-            Log::error("Invalid weight calibration: scale factor is zero", ['bin' => $binNumber]);
-            return 0;
+        // Guard: a raw value of 0 (or very near 0) means the sensor is
+        // disconnected / not tared.  Without this guard the raw_empty offset
+        // produces a large phantom weight (e.g. ~5 kg on bin 2).
+        // Threshold: anything < |1000| is treated as a bad reading.
+        if (abs($hx711Raw) < 1000) {
+            Log::warning("HX711 raw value near zero — sensor likely disconnected", [
+                'bin' => $binNumber,
+                'raw' => $hx711Raw,
+            ]);
+            return 0.0;
         }
 
-        // Calculate weight using calibration formula
+        // Both bins use 87.1 raw/g to match real firmware scale factors
+        $defaults = $binNumber === 1
+            ? ['raw_empty' => 514375,  'scale' => 87.1]
+            : ['raw_empty' => -480493, 'scale' => 87.1];
+
+        $rawEmpty = config("sensors.load_cell.bin_{$binNumber}.raw_empty",          $defaults['raw_empty']);
+        $scale    = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_gram", $defaults['scale']);
+
+        if ($scale == 0) {
+            Log::error("Invalid weight calibration: scale factor is zero", ['bin' => $binNumber]);
+            return 0.0;
+        }
+
         $weight = (($hx711Raw - $rawEmpty) / $scale) / 1000;
-        
-        // Log calculation for debugging
+
         Log::debug("Weight calculation", [
-            'bin' => $binNumber,
-            'raw' => $hx711Raw,
-            'raw_empty' => $rawEmpty,
-            'scale_raw_per_gram' => $scale,
-            'calculated_kg' => $weight
+            'bin'               => $binNumber,
+            'raw'               => $hx711Raw,
+            'raw_empty'         => $rawEmpty,
+            'scale_raw_per_gram'=> $scale,
+            'calculated_kg'     => $weight,
         ]);
-        
+
         // Clamp between 0 and max weight
-        return max(0, min($maxWeight, $weight));
+        return max(0.0, min($maxWeight, $weight));
     }
 
     /**
      * Derive gas level from MQ sensor raw value
      * 
      * Calibration values from Raw Values = Calibration.docx:
-     * - Normal air: 100-300
-     * - Alcohol spray (flammable): 600-900+
-     * - Digital trigger: Active LOW (pin 25)
+     * - Normal air: 100-499
+     * - Dangerous (flammable): 500+
      * 
-     * Returns: 0 = Normal, 1 = Elevated, 2 = Dangerous (Flammable)
+     * Returns: 0 = Normal, 1 = Dangerous
      */
     private function deriveGasLevel(int $mqRaw): int
     {
-        $normalMax = config('sensors.mq_normal_max', 300);
-        $elevatedMin = config('sensors.mq_elevated_min', 300);
-        $dangerousMin = config('sensors.mq_dangerous_min', 600);
+        $dangerousMin = config('sensors.mq_dangerous_min', 500);
 
-        // Dangerous: Above 600 (calibrated flammable threshold)
+        // Dangerous: At or above threshold
         if ($mqRaw >= $dangerousMin) {
-            return 2; // Dangerous
+            return 1; // Dangerous
         }
-        
-        // Elevated: Between 300-600
-        if ($mqRaw >= $elevatedMin) {
-            return 1; // Elevated
-        }
-        
-        // Normal: Below 300
+
+        // Normal: Below threshold
         return 0; // Normal
     }
 
@@ -450,7 +482,7 @@ class EspController extends Controller
      */
     private function checkGasAlerts(Device $device, int $gasLevel): void
     {
-        if ($gasLevel >= 2) {
+        if ($gasLevel >= 1) {
             $alert = $device->alerts()->firstOrCreate(
                 ['type' => 'gas_leak', 'status' => 'active'],
                 ['message' => 'Dangerous gas level detected! Possible flammable gas.']
@@ -458,17 +490,9 @@ class EspController extends Controller
             if ($alert->wasRecentlyCreated) {
                 event(new AlertCreated($alert));
             }
-        } elseif ($gasLevel >= 1) {
-            $alert = $device->alerts()->firstOrCreate(
-                ['type' => 'gas_elevated', 'status' => 'active'],
-                ['message' => 'Elevated gas level detected. Monitor closely.']
-            );
-            if ($alert->wasRecentlyCreated) {
-                event(new AlertCreated($alert));
-            }
         } else {
             $device->alerts()
-                ->whereIn('type', ['gas_leak', 'gas_elevated'])
+                ->where('type', 'gas_leak')
                 ->where('status', 'active')
                 ->update(['status' => 'resolved']);
         }

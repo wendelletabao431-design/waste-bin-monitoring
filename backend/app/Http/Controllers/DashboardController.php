@@ -109,11 +109,10 @@ class DashboardController extends Controller
                 $lastWeight = 0;
             }
 
-            // Map gas level (0/1/2) to display strings
+            // Map gas level (0/1) to display strings
             $gasLabel = match ((int) $lastGas) {
-                0 => 'Normal',
-                1 => 'Elevated',
-                2 => 'Dangerous',
+                0       => 'Normal',
+                1       => 'Dangerous',
                 default => 'Normal'
             };
 
@@ -233,16 +232,32 @@ class DashboardController extends Controller
 
         // =================================================================
         // CAPACITY: Remaining space in the bin
+        // Combined fill (volume) + weight capacity, averaged.
+        // fill_capacity   = 100 - fill%
+        // weight_capacity = 100 - (weight_kg / max_weight_kg * 100)
+        // capacity        = average of both, clamped 0-100
         // =================================================================
-        
-        $currentFill = 0;
+
+        $maxWeightKg = config('sensors.max_weight_kg', 20.0);
+
+        $currentFill   = 0.0;
+        $currentWeight = 0.0;
+
         if ($isOnline) {
             $currentFill = $device->readings()
                 ->where('type', 'fill')
                 ->latest()
                 ->first()?->value ?? 0;
+
+            $currentWeight = $device->readings()
+                ->where('type', 'weight')
+                ->latest()
+                ->first()?->value ?? 0;
         }
-        $capacity = max(0, 100 - $currentFill);
+
+        $fillCapacity   = max(0, 100 - $currentFill);
+        $weightCapacity = max(0, 100 - ($currentWeight / $maxWeightKg * 100));
+        $capacity       = round(($fillCapacity + $weightCapacity) / 2, 1);
 
         return response()->json([
             'fill_rate' => $fillRate,
