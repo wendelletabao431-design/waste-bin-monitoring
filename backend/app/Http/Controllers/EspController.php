@@ -286,42 +286,50 @@ class EspController extends Controller
     /**
      * Derive weight in kg from HX711 tared value
      *
-     * The firmware sends scale.get_value(times) which is already tare-subtracted
-     * (i.e. 0 on an empty bin). So the backend must NOT apply raw_empty again.
+     * The firmware sends scale.get_value(times), which is the tare-subtracted
+     * raw ADC value (≈ 0 for empty bin, positive for weight).
      *
-     * Formula: weight_kg = hx711_tared / scale_raw_per_gram / 1000
+     * Calibration from "Raw Values = Calibration.docx":
+     *   Bin 1: SCALE1 = 119,800 raw/kg  (RAW_empty=451,977  | 1.31kg → Δ156,600)
+     *   Bin 2: SCALE2 = 117,786 raw/kg  (RAW_empty=-491,000 | 1.31kg → Δ154,300)
      *
-     * Calibration: both bins use SCALE = 87.1 raw/g (matching real firmware)
+     * Formula: weight_kg = hx711_tared / scale_raw_per_kg
+     *   (NO /1000 — scale is already in raw-per-kg, not raw-per-gram)
      *
-     * @param float $hx711Raw Tared HX711 reading (get_value output)
-     * @param int   $binNumber 1 or 2 to select correct calibration
+     * @param float $hx711Raw Tared HX711 reading from get_value()
+     * @param int   $binNumber 1 or 2
      */
     private function deriveWeight(float $hx711Raw, int $binNumber): float
     {
         $maxWeight = config('sensors.max_weight_kg', 20.0);
 
-        // Guard: if the raw tared value is near zero the sensor is empty or
-        // disconnected — skip the math and return 0 to avoid division noise.
-        if (abs($hx711Raw) < 500) {
+        // Guard: near-zero means empty or disconnected sensor.
+        // With scale ~119,800 raw/kg, 1,000 raw ≈ 8 g — safe noise floor.
+        if (abs($hx711Raw) < 1000) {
             return 0.0;
         }
 
-        // Both bins use 87.1 raw/g to match real firmware SCALE1=SCALE2=87.1
-        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_gram", 87.1);
+        // Calibrated scale factors from calibration document (raw units per kg)
+        $defaults = $binNumber === 1
+            ? ['scale' => 119800.0]   // Bin 1: 119,800 raw/kg
+            : ['scale' => 117786.0];  // Bin 2: 117,786 raw/kg
+
+        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_kg", $defaults['scale']);
 
         if ($scale == 0) {
             Log::error("Invalid weight calibration: scale factor is zero", ['bin' => $binNumber]);
             return 0.0;
         }
 
-        // Firmware value is already tared: weight = taredRaw / scale / 1000
-        $weight = ($hx711Raw / $scale) / 1000;
+        // weight_kg = tared_raw / scale_raw_per_kg
+        $weight = $hx711Raw / $scale;
 
-        Log::debug("Weight calculation", [
-            'bin'                => $binNumber,
-            'hx711_tared_raw'    => $hx711Raw,
-            'scale_raw_per_gram' => $scale,
-            'calculated_kg'      => $weight,
+        // Log at INFO level so it appears in Railway production logs
+        Log::info("Weight calculation", [
+            'bin'              => $binNumber,
+            'hx711_tared_raw'  => $hx711Raw,
+            'scale_raw_per_kg' => $scale,
+            'calculated_kg'    => round($weight, 3),
         ]);
 
         return max(0.0, min($maxWeight, $weight));
