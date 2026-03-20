@@ -76,31 +76,29 @@ class DashboardController extends Controller
         
         $devices = $this->filterVisibleDevices(
             Device::query()
-                ->with([
-                    'readings' => function ($q) {
-                        $q->latest()->limit(10);
-                    }
-                ])
                 ->orderBy('bin_number')
                 ->orderBy('id')
                 ->get()
         );
 
-        $data = $devices->map(function ($dev) use ($offlineThreshold) {
+        $data = $devices->map(function (Device $dev) use ($offlineThreshold) {
             ['location' => $location, 'latitude' => $latitude, 'longitude' => $longitude] = $this->resolveMapData($dev);
 
             // Check if device is online (seen in last X minutes)
             $isOnline = $dev->last_seen_at && 
                         $dev->last_seen_at >= now()->subMinutes($offlineThreshold);
 
-            // CRITICAL: No sensor data = zero values
+            // CRITICAL: No sensor data = zero values.
+            // Query per-type directly per device so readings from another device
+            // never contaminate or crowd out this device's values.
             if ($isOnline) {
-                $lastFill = $dev->readings->where('type', 'fill')->first()?->value ?? 0;
-                $lastGas = $dev->readings->where('type', 'gas')->first()?->value ?? 0;
-                $lastWeight = $dev->readings->where('type', 'weight')->first()?->value ?? 0;
-                // Use cached battery_percent for efficiency, fall back to reading
-                $lastBattery = $dev->battery_percent ?? 
-                              ($dev->readings->where('type', 'battery')->first()?->value ?? 0);
+                $lastFill    = $dev->readings()->where('type', 'fill')->latest()->value('value') ?? 0;
+                $lastGas     = $dev->readings()->where('type', 'gas')->latest()->value('value') ?? 0;
+                $lastWeight  = $dev->readings()->where('type', 'weight')->latest()->value('value') ?? 0;
+                // Use cached battery_percent column first (updated by sendBatteryOnly),
+                // fall back to the readings table.
+                $lastBattery = $dev->battery_percent
+                    ?? ($dev->readings()->where('type', 'battery')->latest()->value('value') ?? 0);
             } else {
                 // OFFLINE = All zeros, no fake data
                 $lastFill = 0;
