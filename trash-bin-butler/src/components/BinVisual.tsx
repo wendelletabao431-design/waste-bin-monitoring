@@ -9,8 +9,8 @@ export default function BinVisual({ bin }: BinVisualProps) {
 
   // Dynamic colors based on fill level
   const getBinColor = () => {
-    if (percentage >= 95) return { primary: '#ef4444', secondary: '#dc2626', accent: '#b91c1c' } // Red
-    if (percentage >= 71) return { primary: '#f59e0b', secondary: '#d97706', accent: '#b45309' } // Orange
+    if (percentage >= 90) return { primary: '#ef4444', secondary: '#dc2626', accent: '#b91c1c' } // Red
+    if (percentage >= 50) return { primary: '#f59e0b', secondary: '#d97706', accent: '#b45309' } // Orange
     return { primary: '#22c55e', secondary: '#16a34a', accent: '#15803d' } // Green
   }
 
@@ -162,21 +162,21 @@ export default function BinVisual({ bin }: BinVisualProps) {
             <div className="w-2 h-2 rounded-full bg-green-500" />
             <span className="text-xs font-semibold text-slate-700">Normal</span>
           </div>
-          <span className="text-xs text-slate-500">0-70%</span>
+          <span className="text-xs text-slate-500">0-49%</span>
         </div>
         <div className="flex items-center justify-between px-3 py-2 bg-yellow-50 rounded-lg border border-yellow-200">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-yellow-500" />
             <span className="text-xs font-semibold text-slate-700">Warning</span>
           </div>
-          <span className="text-xs text-slate-500">71-94%</span>
+          <span className="text-xs text-slate-500">50-89%</span>
         </div>
         <div className="flex items-center justify-between px-3 py-2 bg-red-50 rounded-lg border border-red-200">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-red-500" />
             <span className="text-xs font-semibold text-slate-700">Critical</span>
           </div>
-          <span className="text-xs text-slate-500">95%+</span>
+          <span className="text-xs text-slate-500">90%+</span>
         </div>
       </div>
     </div>

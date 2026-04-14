@@ -16,9 +16,9 @@ const char* serverURL = "https://sincere-creativity-production.up.railway.app/ap
 const char* DEVICE_ID = "ESP32_001";
 
 /* ================= LED ================= */
-#define LED_POWER 27
-#define LED_BLUE  2
-#define LED_WIFI  4
+#define LED_POWER 26  // Green  — solid ON in solar mode, OFF in idle mode
+#define LED_WIFI  4   // Yellow — blink while connecting, solid when connected (solar mode only)
+#define LED_BLUE  2   // Blue   — solid when idle, blinks LOW during HTTP send (solar mode only)
 
 /* ================= I2C ================= */
 #define SDA_PIN 13
@@ -44,12 +44,14 @@ const char* DEVICE_ID = "ESP32_001";
 #define BATTERY_PIN 33
 
 /* ================= CALIBRATION ================= */
-// These are used only locally for LCD display of fill%
-#define BIN1_EMPTY 58.7f
-#define BIN2_EMPTY 48.3f
+// Local fill% display only — backend performs authoritative derivation
+// Bin 1: empty=58cm, full=10cm  (50% at 34cm, 90% at 14.8cm)
+// Bin 2: empty=48cm, full=10cm  (50% at 29cm, 90% at 13.8cm)
+#define BIN1_EMPTY 58.0f
+#define BIN2_EMPTY 48.0f
 #define BIN_FULL   10.0f
 
-// HX711 scale factors (for local LCD display only; raw ADC is sent to backend)
+// HX711 scale factors for local Serial debug display only; raw ADC is sent to backend
 #define SCALE1 90.4f
 #define SCALE2 92.6f
 
@@ -62,8 +64,8 @@ HX711 scale1;
 HX711 scale2;
 
 /* ================= TIMERS ================= */
-unsigned long solarTimer   = 0;
-unsigned long batteryTimer = 0;
+unsigned long solarTimer = 0;
+unsigned long idleTimer  = 0;
 
 /* ================= SENSOR VALUES ================= */
 // Raw values — sent to the backend as-is
@@ -71,7 +73,7 @@ float d1_cm, d2_cm;       // Ultrasonic raw distances (cm)
 long  hx1Raw, hx2Raw;     // HX711 raw ADC values
 int   gas1, gas2;         // MQ sensor ADC values
 
-// Derived values — used locally for LCD display only
+// Derived values — Serial debug only, no longer displayed on LCD
 float bin1Level, bin2Level;   // Fill % (derived from distance)
 float bin1Weight, bin2Weight; // Weight in kg (derived from raw ADC)
 
@@ -106,7 +108,7 @@ float readUltrasonicFiltered(int trig, int echo) {
   return total / count;
 }
 
-/* ================= BIN LEVEL (local display) ================= */
+/* ================= BIN LEVEL (local debug) ================= */
 float getPercent(float dist, float emptyDist) {
   float level = (emptyDist - dist) / (emptyDist - BIN_FULL) * 100.0f;
   return constrain(level, 0.0f, 100.0f);
@@ -118,13 +120,13 @@ void maintainWiFi() {
     Serial.println("[WiFi] Reconnecting...");
     WiFi.disconnect();
     WiFi.begin(ssid, password);
+    // Blink LED_WIFI while connecting; main loop sets solid/off per mode after this
     while (WiFi.status() != WL_CONNECTED) {
       digitalWrite(LED_WIFI, HIGH); delay(200);
       digitalWrite(LED_WIFI, LOW);  delay(200);
     }
     Serial.println("[WiFi] Connected: " + WiFi.localIP().toString());
   }
-  digitalWrite(LED_WIFI, HIGH);
 }
 
 /* ================= READ ALL SENSORS ================= */
@@ -133,16 +135,16 @@ void readAllSensors() {
   d1_cm = readUltrasonicFiltered(TRIG1, ECHO1);
   d2_cm = readUltrasonicFiltered(TRIG2, ECHO2);
 
-  // Derived fill% for local LCD display only
+  // Derived fill% for Serial debug only
   bin1Level = (d1_cm >= 0) ? getPercent(d1_cm, BIN1_EMPTY) : 0.0f;
   bin2Level = (d2_cm >= 0) ? getPercent(d2_cm, BIN2_EMPTY) : 0.0f;
 
   // --- Load cells ---
-  // get_value() returns the raw ADC sum (not divided by scale) — required by backend
+  // get_value() returns the raw ADC sum — required by backend
   hx1Raw = scale1.get_value(10);
   hx2Raw = scale2.get_value(10);
 
-  // Derived weight for local LCD display only
+  // Derived weight for Serial debug only
   bin1Weight = scale1.get_units(10);
   bin2Weight = scale2.get_units(10);
 
@@ -150,7 +152,7 @@ void readAllSensors() {
   gas1 = analogRead(MQ1_AO);
   gas2 = analogRead(MQ2_AO);
 
-  // --- Battery voltage via voltage divider ---
+  // --- Battery voltage via voltage divider (pin 33) ---
   int   raw = analogRead(BATTERY_PIN);
   float adc = (raw / 4095.0f) * 3.3f;
   battery_voltage = adc * 4.0f;
@@ -159,7 +161,6 @@ void readAllSensors() {
   charge_current = ina219.getCurrent_mA() / 1000.0f;
   charge_power   = ina219.getPower_mW()   / 1000.0f;
 
-  // Debug dump
   Serial.printf("[Sensors] d1=%.1fcm d2=%.1fcm hx1=%ld hx2=%ld gas1=%d gas2=%d batt=%.2fV I=%.3fA P=%.2fW\n",
     d1_cm, d2_cm, hx1Raw, hx2Raw, gas1, gas2, battery_voltage, charge_current, charge_power);
 }
@@ -168,6 +169,11 @@ void readAllSensors() {
 void sendData(String eventTag = "") {
 
   maintainWiFi();
+
+  // Blink blue LED during HTTP send — turn LOW for duration of POST.
+  // In solar mode this creates a visible blink; in idle mode it is already LOW.
+  // Main loop restores correct state per mode on next iteration.
+  digitalWrite(LED_BLUE, LOW);
 
   WiFiClientSecure client;
   client.setInsecure(); // Skip TLS cert verification for Railway
@@ -221,22 +227,23 @@ void sendData(String eventTag = "") {
     Serial.printf("[HTTP] POST FAILED (%d): %s\n", httpCode, response.c_str());
   }
 
-  // --- LCD: show fill levels and battery ---
+  // Update LCD with power measurements only.
+  // Backlight is controlled by the main loop per mode — no change here.
+  // Line 1: "V:XX.XV I:X.XXA"  (15 chars max)
+  // Line 2: "P:XX.XXW        "
   lcd.clear();
 
   lcd.setCursor(0, 0);
-  lcd.print("B1:");
-  lcd.print((int)bin1Level);
-  lcd.print("% B2:");
-  lcd.print((int)bin2Level);
-  lcd.print("%");
-
-  lcd.setCursor(0, 1);
   lcd.print("V:");
   lcd.print(battery_voltage, 1);
   lcd.print("V I:");
   lcd.print(charge_current, 2);
   lcd.print("A");
+
+  lcd.setCursor(0, 1);
+  lcd.print("P:");
+  lcd.print(charge_power, 2);
+  lcd.print("W");
 }
 
 /* ================= SETUP ================= */
@@ -252,7 +259,10 @@ void setup() {
   pinMode(LED_BLUE,  OUTPUT);
   pinMode(LED_WIFI,  OUTPUT);
 
-  digitalWrite(LED_POWER, HIGH);
+  // All LEDs off until mode is determined in loop()
+  digitalWrite(LED_POWER, LOW);
+  digitalWrite(LED_BLUE,  LOW);
+  digitalWrite(LED_WIFI,  LOW);
 
   Wire.begin(SDA_PIN, SCL_PIN);
   lcd.init();
@@ -264,7 +274,7 @@ void setup() {
   scale1.begin(HX1_DT, HX1_SCK);
   scale2.begin(HX2_DT, HX2_SCK);
 
-  // Set scale factors for local weight display only
+  // Scale factors for local debug weight display only
   scale1.set_scale(SCALE1);
   scale2.set_scale(SCALE2);
 
@@ -289,47 +299,40 @@ void loop() {
 
   maintainWiFi();
 
-  float current = ina219.getCurrent_mA() / 1000.0f;
+  float current  = ina219.getCurrent_mA() / 1000.0f;
   bool  solarMode = (current > 0.1f);
 
   gas1 = analogRead(MQ1_AO);
   gas2 = analogRead(MQ2_AO);
-
   bool gasDetected = (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
 
-  /* -------- GAS PRIORITY -------- */
-  if (gasDetected) {
-    digitalWrite(LED_BLUE, HIGH); // Visual alert
-
-    lcd.backlight();
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("!! GAS ALERT !!");
-
-    delay(3000);
-
-    readAllSensors();
-    sendData("gas_detected");
-
-    // Keep checking until gas clears
-    while (gasDetected) {
-      delay(5000);
-      gas1 = analogRead(MQ1_AO);
-      gas2 = analogRead(MQ2_AO);
-      gasDetected = (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
-    }
-
-    readAllSensors();
-    sendData("gas_normal");
-
-    digitalWrite(LED_BLUE, LOW);
-  }
-
-  /* -------- SOLAR MODE (send every 60 s) -------- */
+  /* -------- SOLAR MODE: all hardware on, send every 60 s -------- */
   if (solarMode) {
-    digitalWrite(LED_BLUE,  HIGH);
-    digitalWrite(LED_POWER, HIGH);
+    digitalWrite(LED_POWER, HIGH); // Green solid
+    digitalWrite(LED_WIFI,  HIGH); // Yellow solid
+    digitalWrite(LED_BLUE,  HIGH); // Blue solid
     lcd.backlight();
+
+    if (gasDetected) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("!! GAS ALERT !!");
+
+      delay(5000); // 5 s hardware stabilization before reading
+
+      readAllSensors();
+      sendData("gas_detected");
+
+      while (gasDetected) {
+        delay(5000);
+        gas1 = analogRead(MQ1_AO);
+        gas2 = analogRead(MQ2_AO);
+        gasDetected = (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
+      }
+
+      readAllSensors();
+      sendData("gas_normal");
+    }
 
     if (millis() - solarTimer >= 60000UL) {
       readAllSensors();
@@ -337,25 +340,35 @@ void loop() {
       solarTimer = millis();
     }
   }
-  /* -------- BATTERY MODE (send every 20 min) -------- */
+
+  /* -------- IDLE MODE: gas monitoring only, send every 10 min -------- */
   else {
+    digitalWrite(LED_POWER, LOW); // All LEDs off
+    digitalWrite(LED_WIFI,  LOW);
     digitalWrite(LED_BLUE,  LOW);
-    digitalWrite(LED_POWER, LOW);
     lcd.noBacklight();
 
-    if (millis() - batteryTimer >= 1200000UL) {
-      lcd.backlight();
-      lcd.clear();
-      lcd.print("Waking...");
-      delay(3000);
+    if (gasDetected) {
+      delay(5000); // 5 s hardware stabilization (no LCD/LED in idle mode)
 
       readAllSensors();
+      sendData("gas_detected");
+
+      while (gasDetected) {
+        delay(5000);
+        gas1 = analogRead(MQ1_AO);
+        gas2 = analogRead(MQ2_AO);
+        gasDetected = (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
+      }
+
+      readAllSensors();
+      sendData("gas_normal");
+    }
+
+    if (millis() - idleTimer >= 600000UL) { // 10 minutes
+      readAllSensors();
       sendData();
-
-      delay(3000);
-      lcd.noBacklight();
-
-      batteryTimer = millis();
+      idleTimer = millis();
     }
   }
 }

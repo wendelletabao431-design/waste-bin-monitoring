@@ -46,8 +46,8 @@ class DashboardController extends Controller
             return $device->alerts->where('status', 'active');
         });
         
-        $criticalCount = $activeAlerts->whereIn('type', ['gas_leak', 'trash_full'])->count();
-        $warningCount = $activeAlerts->whereIn('type', ['gas_elevated', 'trash_warning'])->count();
+        $criticalCount = $activeAlerts->whereIn('type', ['gas_leak', 'trash_full', 'weight_critical'])->count();
+        $warningCount  = $activeAlerts->whereIn('type', ['gas_elevated', 'trash_warning', 'weight_warning'])->count();
         $normalCount = $totalBins - $devices->filter(function (Device $device) {
             return $device->alerts->where('status', 'active')->isNotEmpty();
         })->count();
@@ -117,9 +117,9 @@ class DashboardController extends Controller
             // Determine status based on fill level and online state
             $status = 'Offline';
             if ($isOnline) {
-                if ($lastFill >= 95) {
+                if ($lastFill >= 90) {
                     $status = 'Critical';
-                } elseif ($lastFill >= 71) {
+                } elseif ($lastFill >= 50) {
                     $status = 'Warning';
                 } else {
                     $status = 'Normal';
@@ -236,7 +236,8 @@ class DashboardController extends Controller
         // capacity        = average of both, clamped 0-100
         // =================================================================
 
-        $maxWeightKg = config('sensors.max_weight_kg', 20.0);
+        $binNumber   = $device->bin_number ?? 1;
+        $maxWeightKg = config("sensors.load_cell.bin_{$binNumber}.max_weight_kg", 20.0);
 
         $currentFill   = 0.0;
         $currentWeight = 0.0;

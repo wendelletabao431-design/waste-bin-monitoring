@@ -139,6 +139,7 @@ class EspController extends Controller
         // Alert checks
         $this->checkFillAlerts($device, $fillPercent);
         $this->checkGasAlerts($device, $gasLevel);
+        $this->checkWeightAlerts($device, $weightKg, $binNumber);
 
         // Store all readings with raw values
         $device->readings()->createMany([
@@ -261,8 +262,8 @@ class EspController extends Controller
         }
 
         $defaults = $binNumber === 1
-            ? ['empty' => 58.7, 'full' => 10.0]
-            : ['empty' => 48.3, 'full' => 10.0];
+            ? ['empty' => 58.0, 'full' => 10.0]
+            : ['empty' => 48.0, 'full' => 10.0];
 
         $emptyDistance = config("sensors.ultrasonic.bin_{$binNumber}.empty_distance_cm", $defaults['empty']);
         $fullDistance = config("sensors.ultrasonic.bin_{$binNumber}.full_distance_cm", $defaults['full']);
@@ -301,7 +302,7 @@ class EspController extends Controller
      */
     private function deriveWeight(float $hx711Raw, int $binNumber): float
     {
-        $maxWeight = config('sensors.max_weight_kg', 20.0);
+        $maxWeight = config("sensors.load_cell.bin_{$binNumber}.max_weight_kg", 20.0);
 
         // Guard: near-zero means empty or disconnected sensor.
         // With scale ~119,800 raw/kg, 1,000 raw ≈ 8 g — safe noise floor.
@@ -310,11 +311,9 @@ class EspController extends Controller
         }
 
         // Calibrated scale factors from calibration document (raw units per kg)
-        $defaults = $binNumber === 1
-            ? ['scale' => 119800.0]   // Bin 1: 119,800 raw/kg
-            : ['scale' => 117786.0];  // Bin 2: 117,786 raw/kg
-
-        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_kg", $defaults['scale']);
+        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_kg",
+            $binNumber === 1 ? 119800.0 : 117786.0
+        );
 
         if ($scale == 0) {
             Log::error("Invalid weight calibration: scale factor is zero", ['bin' => $binNumber]);
@@ -446,11 +445,16 @@ class EspController extends Controller
     }
 
     /**
-     * Check and create fill level alerts
+     * Check and create fill level alerts.
+     *
+     * Thresholds: warning ≥ 50%, critical ≥ 90%, auto-resolve < 40%.
      */
     private function checkFillAlerts(Device $device, float $fillValue): void
     {
-        if ($fillValue >= 95) {
+        $criticalThreshold = config('sensors.fill_critical_threshold', 90);
+        $warningThreshold  = config('sensors.fill_warning_threshold', 50);
+
+        if ($fillValue >= $criticalThreshold) {
             $alert = $device->alerts()->firstOrCreate(
                 ['type' => 'trash_full', 'status' => 'active'],
                 ['message' => "Bin is critical ({$fillValue}% full)"]
@@ -458,7 +462,7 @@ class EspController extends Controller
             if ($alert->wasRecentlyCreated) {
                 event(new AlertCreated($alert));
             }
-        } elseif ($fillValue >= 80) {
+        } elseif ($fillValue >= $warningThreshold) {
             $alert = $device->alerts()->firstOrCreate(
                 ['type' => 'trash_warning', 'status' => 'active'],
                 ['message' => "Bin is getting full ({$fillValue}% full)"]
@@ -466,9 +470,48 @@ class EspController extends Controller
             if ($alert->wasRecentlyCreated) {
                 event(new AlertCreated($alert));
             }
-        } elseif ($fillValue < 70) {
+        } elseif ($fillValue < 40) {
             $device->alerts()
                 ->whereIn('type', ['trash_full', 'trash_warning'])
+                ->where('status', 'active')
+                ->update(['status' => 'resolved']);
+        }
+    }
+
+    /**
+     * Check and create weight alerts.
+     *
+     * Bin 1: warning ≥ 20 kg, critical ≥ 36 kg (max 40 kg)
+     * Bin 2: warning ≥ 10 kg, critical ≥ 18 kg (max 20 kg)
+     */
+    private function checkWeightAlerts(Device $device, float $weightKg, int $binNumber): void
+    {
+        $warningKg  = config("sensors.load_cell.bin_{$binNumber}.warning_weight_kg",
+            $binNumber === 1 ? 20.0 : 10.0
+        );
+        $criticalKg = config("sensors.load_cell.bin_{$binNumber}.critical_weight_kg",
+            $binNumber === 1 ? 36.0 : 18.0
+        );
+
+        if ($weightKg >= $criticalKg) {
+            $alert = $device->alerts()->firstOrCreate(
+                ['type' => 'weight_critical', 'status' => 'active'],
+                ['message' => "Bin weight critical (" . round($weightKg, 1) . " kg)"]
+            );
+            if ($alert->wasRecentlyCreated) {
+                event(new AlertCreated($alert));
+            }
+        } elseif ($weightKg >= $warningKg) {
+            $alert = $device->alerts()->firstOrCreate(
+                ['type' => 'weight_warning', 'status' => 'active'],
+                ['message' => "Bin weight warning (" . round($weightKg, 1) . " kg)"]
+            );
+            if ($alert->wasRecentlyCreated) {
+                event(new AlertCreated($alert));
+            }
+        } else {
+            $device->alerts()
+                ->whereIn('type', ['weight_critical', 'weight_warning'])
                 ->where('status', 'active')
                 ->update(['status' => 'resolved']);
         }
