@@ -1,0 +1,19 @@
+# Claude Code project memory and dev-tool markdown files
+/*.md
+
+# Laravel
+backend/vendor/
+backend/.env
+backend/storage/logs/*
+backend/storage/framework/cache/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+backend/bootstrap/cache/*
+
+# Frontend
+trash-bin-butler/node_modules/
+trash-bin-butler/dist/
+
+# OS
+.DS_Store
+Thumbs.db

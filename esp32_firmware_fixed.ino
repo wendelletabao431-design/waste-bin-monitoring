@@ -4,6 +4,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <Adafruit_INA219.h>
+#include <esp_system.h>
 #include "HX711.h"
 
 /* ================= WIFI / BACKEND ================= */
@@ -56,6 +57,8 @@ const char* DEVICE_ID = "ESP32_001";
 #define SCALE2 92.6f
 
 #define GAS_THRESHOLD 500
+#define SENSOR_WAKE_STABILIZE_MS 3000UL
+#define GAS_CONFIRM_STABILIZE_MS 5000UL
 
 /* ================= OBJECTS ================= */
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -66,6 +69,9 @@ HX711 scale2;
 /* ================= TIMERS ================= */
 unsigned long solarTimer = 0;
 unsigned long idleTimer  = 0;
+bool bootSendPending     = true;
+bool sensorsAwake        = false;
+bool lastSolarMode       = true;
 
 /* ================= SENSOR VALUES ================= */
 // Raw values — sent to the backend as-is
@@ -115,18 +121,91 @@ float getPercent(float dist, float emptyDist) {
 }
 
 /* ================= WIFI ================= */
-void maintainWiFi() {
+void sleepWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.disconnect(true);
+  }
+  WiFi.mode(WIFI_OFF);
+}
+
+bool maintainWiFi(unsigned long timeoutMs = 15000) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] Reconnecting...");
+    WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     WiFi.begin(ssid, password);
+
+    unsigned long startedAt = millis();
+
     // Blink LED_WIFI while connecting; main loop sets solid/off per mode after this
     while (WiFi.status() != WL_CONNECTED) {
       digitalWrite(LED_WIFI, HIGH); delay(200);
       digitalWrite(LED_WIFI, LOW);  delay(200);
+
+      if (millis() - startedAt >= timeoutMs) {
+        Serial.println("[WiFi] Connect timeout");
+        return false;
+      }
     }
+
     Serial.println("[WiFi] Connected: " + WiFi.localIP().toString());
   }
+
+  return true;
+}
+
+/* ================= RESET REASON ================= */
+const char* resetReasonToString(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_UNKNOWN:   return "Unknown";
+    case ESP_RST_POWERON:   return "Power-on";
+    case ESP_RST_EXT:       return "External pin";
+    case ESP_RST_SW:        return "Software reset";
+    case ESP_RST_PANIC:     return "Exception/panic";
+    case ESP_RST_INT_WDT:   return "Interrupt watchdog";
+    case ESP_RST_TASK_WDT:  return "Task watchdog";
+    case ESP_RST_WDT:       return "Other watchdog";
+    case ESP_RST_DEEPSLEEP: return "Deep sleep wake";
+    case ESP_RST_BROWNOUT:  return "Brownout";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "Unmapped";
+  }
+}
+
+/* ================= POWER / WAKE ================= */
+void wakeSensors(const char* reason, unsigned long stabilizeMs = SENSOR_WAKE_STABILIZE_MS) {
+  if (!sensorsAwake) {
+    Serial.printf("[Wake] Sensors ON for %s\n", reason);
+    scale1.power_up();
+    scale2.power_up();
+    sensorsAwake = true;
+  }
+
+  if (stabilizeMs > 0) {
+    Serial.printf("[Wake] Stabilizing for %lu ms\n", stabilizeMs);
+    delay(stabilizeMs);
+
+    // Discard a few HX711 samples right after wake so the next read is steadier.
+    scale1.get_value(3);
+    scale2.get_value(3);
+  }
+}
+
+void sleepSensors() {
+  if (!sensorsAwake) {
+    return;
+  }
+
+  Serial.println("[Sleep] Sensors idle");
+  scale1.power_down();
+  scale2.power_down();
+  sensorsAwake = false;
+}
+
+bool quickGasDetected() {
+  gas1 = analogRead(MQ1_AO);
+  gas2 = analogRead(MQ2_AO);
+  return (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
 }
 
 /* ================= READ ALL SENSORS ================= */
@@ -165,10 +244,19 @@ void readAllSensors() {
     d1_cm, d2_cm, hx1Raw, hx2Raw, gas1, gas2, battery_voltage, charge_current, charge_power);
 }
 
+bool confirmGasState(const char* reason) {
+  wakeSensors(reason, GAS_CONFIRM_STABILIZE_MS);
+  readAllSensors();
+  return (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
+}
+
 /* ================= SEND DATA ================= */
 void sendData(String eventTag = "") {
 
-  maintainWiFi();
+  if (!maintainWiFi()) {
+    Serial.println("[HTTP] Skipping send because WiFi is unavailable");
+    return;
+  }
 
   // Blink blue LED during HTTP send — turn LOW for duration of POST.
   // In solar mode this creates a visible blink; in idle mode it is already LOW.
@@ -179,7 +267,11 @@ void sendData(String eventTag = "") {
   client.setInsecure(); // Skip TLS cert verification for Railway
 
   HTTPClient http;
+  const char* headerKeys[] = {"Location", "Content-Type"};
+  http.collectHeaders(headerKeys, 2);
   http.begin(client, serverURL);
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+  http.setTimeout(10000);
   http.addHeader("Content-Type", "application/json");
 
   // Build nested JSON matching backend schema:
@@ -218,14 +310,20 @@ void sendData(String eventTag = "") {
   Serial.println("[HTTP] Sending: " + json);
 
   int httpCode = http.POST(json);
-  String response = http.getString();
-  http.end();
 
   if (httpCode == 200 || httpCode == 201) {
-    Serial.printf("[HTTP] POST OK (%d): %s\n", httpCode, response.c_str());
+    String contentType = http.header("Content-Type");
+    Serial.printf("[HTTP] POST OK (%d), content-type=%s\n", httpCode, contentType.c_str());
+  } else if (httpCode > 0) {
+    String location = http.header("Location");
+    String contentType = http.header("Content-Type");
+    Serial.printf("[HTTP] POST FAILED (%d), location=%s, content-type=%s\n",
+      httpCode, location.c_str(), contentType.c_str());
   } else {
-    Serial.printf("[HTTP] POST FAILED (%d): %s\n", httpCode, response.c_str());
+    Serial.printf("[HTTP] POST ERROR (%d): %s\n", httpCode, http.errorToString(httpCode).c_str());
   }
+
+  http.end();
 
   // Update LCD with power measurements only.
   // Backlight is controlled by the main loop per mode — no change here.
@@ -249,6 +347,10 @@ void sendData(String eventTag = "") {
 /* ================= SETUP ================= */
 void setup() {
   Serial.begin(115200);
+  delay(200);
+
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  Serial.printf("[Boot] Reset reason: %d (%s)\n", resetReason, resetReasonToString(resetReason));
 
   pinMode(TRIG1, OUTPUT);
   pinMode(ECHO1, INPUT);
@@ -280,34 +382,51 @@ void setup() {
 
   scale1.tare();
   scale2.tare();
+  sensorsAwake = true;
 
   Serial.println("[Setup] Connecting to WiFi: " + String(ssid));
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   maintainWiFi();
 
   lcd.clear();
-  lcd.print("WiFi OK");
+  lcd.print(WiFi.status() == WL_CONNECTED ? "WiFi OK" : "WiFi Retry");
   delay(1000);
 
-  // Send an initial reading on boot
+  // Read sensors at boot, but defer the first POST until loop()
+  // so we avoid the heaviest network/TLS work during startup.
   readAllSensors();
-  sendData("boot");
 }
 
 /* ================= LOOP ================= */
 void loop() {
 
-  maintainWiFi();
-
   float current  = ina219.getCurrent_mA() / 1000.0f;
   bool  solarMode = (current > 0.1f);
+  bool  gasDetected = quickGasDetected();
 
-  gas1 = analogRead(MQ1_AO);
-  gas2 = analogRead(MQ2_AO);
-  bool gasDetected = (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
+  if (bootSendPending && millis() >= 5000UL) {
+    sendData("boot");
+    bootSendPending = false;
+    solarTimer = millis();
+    idleTimer = millis();
+  }
+
+  if (solarMode != lastSolarMode) {
+    if (solarMode) {
+      wakeSensors("solar mode", SENSOR_WAKE_STABILIZE_MS);
+    } else {
+      sleepSensors();
+      sleepWiFi();
+    }
+    lastSolarMode = solarMode;
+  }
 
   /* -------- SOLAR MODE: all hardware on, send every 60 s -------- */
   if (solarMode) {
+    wakeSensors("solar mode", 0);
+    maintainWiFi();
+
     digitalWrite(LED_POWER, HIGH); // Green solid
     digitalWrite(LED_WIFI,  HIGH); // Yellow solid
     digitalWrite(LED_BLUE,  HIGH); // Blue solid
@@ -318,23 +437,23 @@ void loop() {
       lcd.setCursor(0, 0);
       lcd.print("!! GAS ALERT !!");
 
-      delay(5000); // 5 s hardware stabilization before reading
+      if (confirmGasState("gas_detected")) {
+        sendData("gas_detected");
 
-      readAllSensors();
-      sendData("gas_detected");
+        while (quickGasDetected()) {
+          delay(5000);
+        }
 
-      while (gasDetected) {
-        delay(5000);
-        gas1 = analogRead(MQ1_AO);
-        gas2 = analogRead(MQ2_AO);
-        gasDetected = (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
+        if (!confirmGasState("gas_normal")) {
+          sendData("gas_normal");
+        }
+      } else {
+        Serial.println("[Gas] Cleared before confirmed gas_detected send");
       }
-
-      readAllSensors();
-      sendData("gas_normal");
     }
 
     if (millis() - solarTimer >= 60000UL) {
+      wakeSensors("solar sample", SENSOR_WAKE_STABILIZE_MS);
       readAllSensors();
       sendData();
       solarTimer = millis();
@@ -349,26 +468,31 @@ void loop() {
     lcd.noBacklight();
 
     if (gasDetected) {
-      delay(5000); // 5 s hardware stabilization (no LCD/LED in idle mode)
+      if (confirmGasState("gas_detected")) {
+        sendData("gas_detected");
 
-      readAllSensors();
-      sendData("gas_detected");
+        while (quickGasDetected()) {
+          delay(5000);
+        }
 
-      while (gasDetected) {
-        delay(5000);
-        gas1 = analogRead(MQ1_AO);
-        gas2 = analogRead(MQ2_AO);
-        gasDetected = (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD);
+        if (!confirmGasState("gas_normal")) {
+          sendData("gas_normal");
+        }
+      } else {
+        Serial.println("[Gas] Cleared before confirmed gas_detected send");
       }
 
-      readAllSensors();
-      sendData("gas_normal");
+      sleepSensors();
+      sleepWiFi();
     }
 
     if (millis() - idleTimer >= 600000UL) { // 10 minutes
+      wakeSensors("idle sample", SENSOR_WAKE_STABILIZE_MS);
       readAllSensors();
       sendData();
       idleTimer = millis();
+      sleepSensors();
+      sleepWiFi();
     }
   }
 }
