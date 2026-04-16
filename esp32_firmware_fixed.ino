@@ -52,9 +52,11 @@ const char* DEVICE_ID = "ESP32_001";
 #define BIN2_EMPTY 48.0f
 #define BIN_FULL   10.0f
 
-// HX711 scale factors for local Serial debug display only; raw ADC is sent to backend
-#define SCALE1 90.4f
-#define SCALE2 92.6f
+// HX711 scale factors for local display/debug only; raw ADC is sent to backend
+#define SCALE1 119800.0f   // raw ADC counts per kg — Bin 1
+#define SCALE2 117786.0f   // raw ADC counts per kg — Bin 2
+// Suppress HX711 noise below this weight (raw drift after tare ≈ ±5000 counts ≈ 42g)
+#define WEIGHT_DEADBAND_KG 0.05f
 
 #define GAS_THRESHOLD 500
 #define SENSOR_WAKE_STABILIZE_MS 3000UL
@@ -223,9 +225,11 @@ void readAllSensors() {
   hx1Raw = scale1.get_value(10);
   hx2Raw = scale2.get_value(10);
 
-  // Derived weight for Serial debug only
-  bin1Weight = scale1.get_units(10);
-  bin2Weight = scale2.get_units(10);
+  // Derived weight for display/debug only (computed from raw; raw value is what the backend receives)
+  bin1Weight = (float)hx1Raw / SCALE1;
+  bin2Weight = (float)hx2Raw / SCALE2;
+  if (bin1Weight < WEIGHT_DEADBAND_KG) bin1Weight = 0.0f;
+  if (bin2Weight < WEIGHT_DEADBAND_KG) bin2Weight = 0.0f;
 
   // --- Gas sensors ---
   gas1 = analogRead(MQ1_AO);
@@ -240,8 +244,15 @@ void readAllSensors() {
   charge_current = ina219.getCurrent_mA() / 1000.0f;
   charge_power   = ina219.getPower_mW()   / 1000.0f;
 
-  Serial.printf("[Sensors] d1=%.1fcm d2=%.1fcm hx1=%ld hx2=%ld gas1=%d gas2=%d batt=%.2fV I=%.3fA P=%.2fW\n",
-    d1_cm, d2_cm, hx1Raw, hx2Raw, gas1, gas2, battery_voltage, charge_current, charge_power);
+  // Format weight as grams below 1 kg, kg above — mirrors a weighing scale display
+  char w1[8], w2[8];
+  if (bin1Weight < 1.0f) snprintf(w1, sizeof(w1), "%dg",   (int)(bin1Weight * 1000));
+  else                   snprintf(w1, sizeof(w1), "%.1fkg", bin1Weight);
+  if (bin2Weight < 1.0f) snprintf(w2, sizeof(w2), "%dg",   (int)(bin2Weight * 1000));
+  else                   snprintf(w2, sizeof(w2), "%.1fkg", bin2Weight);
+
+  Serial.printf("[Sensors] d1=%.1fcm(%.0f%%) d2=%.1fcm(%.0f%%) hx1=%ld(%s) hx2=%ld(%s) gas1=%d gas2=%d batt=%.2fV I=%.3fA P=%.2fW\n",
+    d1_cm, bin1Level, d2_cm, bin2Level, hx1Raw, w1, hx2Raw, w2, gas1, gas2, battery_voltage, charge_current, charge_power);
 }
 
 bool confirmGasState(const char* reason) {
@@ -325,23 +336,22 @@ void sendData(String eventTag = "") {
 
   http.end();
 
-  // Update LCD with power measurements only.
-  // Backlight is controlled by the main loop per mode — no change here.
-  // Line 1: "V:XX.XV I:X.XXA"  (15 chars max)
-  // Line 2: "P:XX.XXW        "
+  // LCD: show bin weights in weighing-scale format (g below 1 kg, kg above)
+  // Line 0: "B1: 850g"  or  "B1: 1.5kg"
+  // Line 1: "B2: 850g"  or  "B2: 1.5kg"
   lcd.clear();
 
   lcd.setCursor(0, 0);
-  lcd.print("V:");
-  lcd.print(battery_voltage, 1);
-  lcd.print("V I:");
-  lcd.print(charge_current, 2);
-  lcd.print("A");
+  lcd.print("B1: ");
+  if      (bin1Weight == 0.0f) lcd.print("----");
+  else if (bin1Weight < 1.0f)  { lcd.print((int)(bin1Weight * 1000)); lcd.print("g"); }
+  else                          { lcd.print(bin1Weight, 1);            lcd.print("kg"); }
 
   lcd.setCursor(0, 1);
-  lcd.print("P:");
-  lcd.print(charge_power, 2);
-  lcd.print("W");
+  lcd.print("B2: ");
+  if      (bin2Weight == 0.0f) lcd.print("----");
+  else if (bin2Weight < 1.0f)  { lcd.print((int)(bin2Weight * 1000)); lcd.print("g"); }
+  else                          { lcd.print(bin2Weight, 1);            lcd.print("kg"); }
 }
 
 /* ================= SETUP ================= */
