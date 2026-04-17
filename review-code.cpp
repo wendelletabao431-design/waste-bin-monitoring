@@ -25,7 +25,7 @@ const char* DEVICE_ID = "ESP32_TEST_001";
 #define HX1_SCK     23
 #define MQ1_AO      34
 
-// Bin 2 — was missing entirely, causing no Bin 2 weight
+// Bin 2
 #define TRIG2       17
 #define ECHO2       16
 #define HX2_DT      21
@@ -35,14 +35,13 @@ const char* DEVICE_ID = "ESP32_TEST_001";
 #define BATTERY_PIN 33
 
 /* ================= CALIBRATION ================= */
-// Bin 1 — confirmed working calibration
+// Bin 1 — confirmed calibration
 #define HX1_OFFSET  10360
 #define HX1_SCALE   -24050.0f
 
-// Bin 2 — set to same as Bin 1 as starting point
-// TODO: run a known-weight calibration for Bin 2 to get accurate values
+// Bin 2 — confirmed calibration
 #define HX2_OFFSET  10360
-#define HX2_SCALE   -24050.0f
+#define HX2_SCALE   -25160.0f
 
 // Suppress noise below 50g after tare
 #define WEIGHT_DEADBAND_KG 0.05f
@@ -52,7 +51,7 @@ const char* DEVICE_ID = "ESP32_TEST_001";
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 HX711 scale1;
-HX711 scale2;   // was missing
+HX711 scale2;
 
 unsigned long lastSend = 0;
 unsigned long lastLcd  = 0;
@@ -87,7 +86,7 @@ float readUltrasonic(int trig, int echo) {
 }
 
 /* ================= STABLE WEIGHT ================= */
-// Takes scale + calibration so the same function works for both bins
+// Same function for both bins — pass scale + calibration values
 float getStableWeight(HX711& scale, int offset, float scaleF) {
   float total = 0;
   int   valid = 0;
@@ -112,7 +111,7 @@ float getStableWeight(HX711& scale, int offset, float scaleF) {
 }
 
 /* ================= LCD ================= */
-// Prints weight in g/kg format — blank (----) when nothing on scale
+// Shows weight as grams below 1 kg, kg above — ---- when nothing on scale
 void printWeight(float kg) {
   if      (kg == 0.0f) lcd.print("----");
   else if (kg < 1.0f)  { lcd.print((int)(kg * 1000)); lcd.print("g"); }
@@ -148,23 +147,21 @@ void sendData(float w1, float d1, int g1, float w2, float d2, int g2, float batt
   http.setTimeout(10000);
   http.addHeader("Content-Type", "application/json");
 
-  // Reverse-compute hx711_raw from kg so the backend can derive weight server-side
-  // raw = (kg * scale) + offset  →  inverse of kg = (raw - offset) / scale
+  // Backend expects hx711_raw (raw ADC counts), not kg
+  // Reverse: raw = (kg * scale) + offset
   long hx1Raw = (long)(w1 * HX1_SCALE) + HX1_OFFSET;
   long hx2Raw = (long)(w2 * HX2_SCALE) + HX2_OFFSET;
 
-  String json = "{";
-  json += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  json += "\"battery_voltage\":" + String(batt, 2) + ",";
-  json += "\"bin_1\":{";
-  json += "\"distance_cm\":" + String(d1, 1) + ",";
-  json += "\"hx711_raw\":"   + String(hx1Raw) + ",";  // was weight_kg — backend ignored it
-  json += "\"mq_raw\":"      + String(g1);             // was gas_raw — backend ignored it
-  json += "},";
-  json += "\"bin_2\":{";
-  json += "\"distance_cm\":" + String(d2, 1) + ",";
-  json += "\"hx711_raw\":"   + String(hx2Raw) + ",";
-  json += "\"mq_raw\":"      + String(g2);
+  String json;
+  json.reserve(220);
+  json  = "{\"device_id\":\"";   json += DEVICE_ID;          json += "\"";
+  json += ",\"battery_voltage\":"; json += String(batt, 2);
+  json += ",\"bin_1\":{\"distance_cm\":"; json += String(d1, 1);
+  json += ",\"hx711_raw\":";  json += hx1Raw;
+  json += ",\"mq_raw\":";     json += g1;   json += "}";
+  json += ",\"bin_2\":{\"distance_cm\":"; json += String(d2, 1);
+  json += ",\"hx711_raw\":";  json += hx2Raw;
+  json += ",\"mq_raw\":";     json += g2;   json += "}";
   json += "}";
 
   int code = http.POST(json);
@@ -177,14 +174,8 @@ void sendData(float w1, float d1, int g1, float w2, float d2, int g2, float batt
 void setup() {
   Serial.begin(115200);
 
-  // Bin 1
-  pinMode(TRIG1, OUTPUT);
-  pinMode(ECHO1, INPUT);
-
-  // Bin 2 — was missing from setup
-  pinMode(TRIG2, OUTPUT);
-  pinMode(ECHO2, INPUT);
-
+  pinMode(TRIG1, OUTPUT); pinMode(ECHO1, INPUT);
+  pinMode(TRIG2, OUTPUT); pinMode(ECHO2, INPUT);
   pinMode(LED_POWER, OUTPUT);
   pinMode(LED_WIFI,  OUTPUT);
   pinMode(LED_BLUE,  OUTPUT);
@@ -196,12 +187,12 @@ void setup() {
   lcd.backlight();
 
   scale1.begin(HX1_DT, HX1_SCK);
-  scale2.begin(HX2_DT, HX2_SCK);   // was missing
+  scale2.begin(HX2_DT, HX2_SCK);
 
   delay(3000);
 
   scale1.tare();
-  scale2.tare();   // was missing
+  scale2.tare();
 
   WiFi.begin(ssid, password);
   maintainWiFi();
@@ -211,12 +202,12 @@ void setup() {
 void loop() {
   if (millis() - lastLcd >= LCD_REFRESH_MS) {
 
-    float w1  = getStableWeight(scale1, HX1_OFFSET, HX1_SCALE);
-    float w2  = getStableWeight(scale2, HX2_OFFSET, HX2_SCALE);  // was missing
-    float d1  = readUltrasonic(TRIG1, ECHO1);
-    float d2  = readUltrasonic(TRIG2, ECHO2);                     // was missing
-    int   g1  = analogRead(MQ1_AO);
-    int   g2  = analogRead(MQ2_AO);                               // was missing
+    float w1   = getStableWeight(scale1, HX1_OFFSET, HX1_SCALE);
+    float w2   = getStableWeight(scale2, HX2_OFFSET, HX2_SCALE);
+    float d1   = readUltrasonic(TRIG1, ECHO1);
+    float d2   = readUltrasonic(TRIG2, ECHO2);
+    int   g1   = analogRead(MQ1_AO);
+    int   g2   = analogRead(MQ2_AO);
     float batt = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 4.0f;
 
     Serial.printf("[DATA] W1=%.2fkg D1=%.1f G1=%d | W2=%.2fkg D2=%.1f G2=%d | Batt=%.2f\n",
