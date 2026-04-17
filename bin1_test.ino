@@ -9,7 +9,7 @@
 const char* ssid      = "TABAO_FAM";
 const char* password  = "JOAN062199";
 const char* serverURL = "https://sincere-creativity-production.up.railway.app/api/bin-data";
-const char* DEVICE_ID = "ESP32_TEST_001";
+const char* DEVICE_ID = "ESP32_001";
 
 /* ================= PINS ================= */
 #define LED_POWER   26
@@ -25,8 +25,9 @@ const char* DEVICE_ID = "ESP32_TEST_001";
 #define BATTERY_PIN 33
 
 /* ================= CALIBRATION ================= */
-#define HX1_OFFSET          10360
-#define HX1_SCALE           -24050.0f
+// Backend derives weight as: kg = hx711_raw / BIN1_RAW_PER_KG
+// Firmware sends raw directly — no reverse-compute needed
+#define BIN1_RAW_PER_KG   21564.0f
 #define WEIGHT_DEADBAND_KG  0.05f
 
 #define SEND_INTERVAL_MS  30000UL
@@ -37,6 +38,7 @@ HX711 scale1;
 
 unsigned long lastSend = 0;
 unsigned long lastLcd  = 0;
+long  hx1Raw = 0;
 
 /* ================= WIFI ================= */
 bool maintainWiFi() {
@@ -68,28 +70,18 @@ float readUltrasonic() {
 }
 
 /* ================= WEIGHT ================= */
-float getStableWeight() {
-  float total = 0;
-  int   valid = 0;
+// Returns display weight in kg; also updates global hx1Raw for sending
+float readWeight() {
+  hx1Raw = scale1.get_value(10);          // 10-sample average, raw ADC counts
+  if (hx1Raw < 0) hx1Raw = -hx1Raw;      // load cell wired inverted — flip sign
+  float kg = (float)hx1Raw / BIN1_RAW_PER_KG;
 
-  for (int i = 0; i < 10; i++) {
-    long  raw = scale1.get_value();
-    float kg  = (raw - HX1_OFFSET) / HX1_SCALE;
+  Serial.printf("[HX711] raw=%ld  kg=%.4f\n", hx1Raw, kg);
+  if (kg > 50.0f)             return 0.0f;
+  if (kg < WEIGHT_DEADBAND_KG) return 0.0f;
 
-    if (kg > -5.0f && kg < 50.0f) {
-      total += kg;
-      valid++;
-    }
-    delay(10);
-  }
-
-  if (valid == 0) return 0.0f;
-
-  float weight = total / valid;
-  if (weight < WEIGHT_DEADBAND_KG) weight = 0.0f;
-
-  return weight;
-}
+  return kg;
+} 
 
 /* ================= LCD ================= */
 void updateLCD(float weight, float distance) {
@@ -108,7 +100,7 @@ void updateLCD(float weight, float distance) {
 }
 
 /* ================= HTTP ================= */
-void sendData(float weight, float distance, int gas, float batt) {
+void sendData(float distance, int gas, float batt) {
   if (!maintainWiFi()) return;
 
   WiFiClientSecure client;
@@ -118,16 +110,16 @@ void sendData(float weight, float distance, int gas, float batt) {
   http.setTimeout(10000);
   http.addHeader("Content-Type", "application/json");
 
-  // Backend expects raw ADC counts — reverse-compute from kg
-  long hx1Raw = (long)(weight * HX1_SCALE) + HX1_OFFSET;
-
+  // Send raw ADC value directly — backend divides by 119800 to get kg
   String json;
   json.reserve(180);
-  json  = "{\"device_id\":\"";      json += DEVICE_ID;       json += "\"";
-  json += ",\"battery_voltage\":";  json += String(batt, 2);
+  json  = "{\"device_id\":\"";       json += DEVICE_ID;        json += "\"";
+  json += ",\"battery_voltage\":";   json += String(batt, 2);
   json += ",\"bin_1\":{\"distance_cm\":"; json += String(distance, 1);
-  json += ",\"hx711_raw\":";        json += hx1Raw;
-  json += ",\"mq_raw\":";           json += gas;  json += "}}";
+  json += ",\"hx711_raw\":";         json += hx1Raw;
+  json += ",\"mq_raw\":";            json += gas;  json += "}}";
+
+  Serial.printf("[JSON] %s\n", json.c_str());
 
   int code = http.POST(json);
   Serial.printf("[HTTP] %d\n", code);
@@ -163,7 +155,7 @@ void setup() {
 void loop() {
   if (millis() - lastLcd >= LCD_REFRESH_MS) {
 
-    float weight   = getStableWeight();
+    float weight   = readWeight();
     float distance = readUltrasonic();
     int   gas      = analogRead(MQ1_AO);
     float batt     = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 4.0f;
@@ -174,7 +166,7 @@ void loop() {
     updateLCD(weight, distance);
 
     if (millis() - lastSend >= SEND_INTERVAL_MS) {
-      sendData(weight, distance, gas, batt);
+      sendData(distance, gas, batt);
       lastSend = millis();
     }
 
