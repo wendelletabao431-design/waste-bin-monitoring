@@ -230,33 +230,20 @@ class DashboardController extends Controller
 
         // =================================================================
         // CAPACITY: Remaining space in the bin
-        // Combined fill (volume) + weight capacity, averaged.
-        // fill_capacity   = 100 - fill%
-        // weight_capacity = 100 - (weight_kg / max_weight_kg * 100)
-        // capacity        = average of both, clamped 0-100
+        // capacity = 100 - fill%
+        // e.g. bin 60% full → 40% remaining capacity
         // =================================================================
 
-        $binNumber   = $device->bin_number ?? 1;
-        $maxWeightKg = config("sensors.load_cell.bin_{$binNumber}.max_weight_kg", 20.0);
-
-        $currentFill   = 0.0;
-        $currentWeight = 0.0;
+        $currentFill = 0.0;
 
         if ($isOnline) {
             $currentFill = $device->readings()
                 ->where('type', 'fill')
                 ->latest()
                 ->first()?->value ?? 0;
-
-            $currentWeight = $device->readings()
-                ->where('type', 'weight')
-                ->latest()
-                ->first()?->value ?? 0;
         }
 
-        $fillCapacity   = max(0, 100 - $currentFill);
-        $weightCapacity = max(0, 100 - ($currentWeight / $maxWeightKg * 100));
-        $capacity       = round(($fillCapacity + $weightCapacity) / 2, 1);
+        $capacity = max(0, round(100 - $currentFill, 1));
 
         return response()->json([
             'fill_rate' => $fillRate,
