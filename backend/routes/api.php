@@ -46,3 +46,4 @@ Route::get('/devices/{id}/history', [DashboardController::class, 'deviceHistory'
 // Test Endpoints (REMOVE AFTER TESTING)
 Route::get('/test/alerts', [TestController::class, 'testAlerts']);
 Route::get('/test/cleanup', [TestController::class, 'cleanup']);
+Route::get('/test/smtp-diagnose', [TestController::class, 'diagnoseSmtp']);

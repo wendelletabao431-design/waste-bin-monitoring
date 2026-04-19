@@ -135,6 +135,92 @@ class TestController extends Controller
         return response()->json($results);
     }
 
+    public function diagnoseSmtp()
+    {
+        $host = config('mail.mailers.smtp.host');
+        $port = (int) config('mail.mailers.smtp.port');
+        $username = config('mail.mailers.smtp.username');
+        $password = config('mail.mailers.smtp.password');
+        $encryption = config('mail.mailers.smtp.scheme') ?? env('MAIL_ENCRYPTION');
+        $fromAddress = config('mail.from.address');
+
+        $result = [
+            'timestamp' => now()->toISOString(),
+            'config_read_from_container' => [
+                'host' => $host,
+                'port' => $port,
+                'username' => $username,
+                'password_length' => strlen((string) $password),
+                'password_first_4' => substr((string) $password, 0, 4),
+                'encryption' => $encryption,
+                'from_address' => $fromAddress,
+                'mail_timeout_env' => env('MAIL_TIMEOUT'),
+            ],
+            'step_1_dns_lookup' => null,
+            'step_2_tcp_connect' => null,
+            'step_3_smtp_send' => null,
+        ];
+
+        // STEP 1: DNS lookup — can Railway even resolve smtp.gmail.com?
+        $ip = @gethostbyname($host);
+        $result['step_1_dns_lookup'] = [
+            'host' => $host,
+            'resolved_ip' => $ip,
+            'success' => $ip !== $host,
+        ];
+
+        // STEP 2: Raw TCP socket — is outbound SMTP blocked, or is it auth?
+        $start = microtime(true);
+        $errno = 0;
+        $errstr = '';
+        $socket = @fsockopen($host, $port, $errno, $errstr, 10); // 10s timeout
+        $elapsed = round((microtime(true) - $start) * 1000);
+
+        if ($socket) {
+            $banner = @fgets($socket, 1024);
+            @fclose($socket);
+            $result['step_2_tcp_connect'] = [
+                'success' => true,
+                'elapsed_ms' => $elapsed,
+                'banner' => trim((string) $banner),
+                'conclusion' => 'Railway CAN reach ' . $host . ':' . $port . '. Network is fine. If email still fails, it is an auth issue (wrong app password, 2FA off, or new account restricted).',
+            ];
+        } else {
+            $result['step_2_tcp_connect'] = [
+                'success' => false,
+                'elapsed_ms' => $elapsed,
+                'errno' => $errno,
+                'errstr' => $errstr,
+                'conclusion' => 'Railway CANNOT reach ' . $host . ':' . $port . '. Outbound SMTP is blocked on this network — switch to Brevo, Resend, Mailgun, or another API-based provider.',
+            ];
+        }
+
+        // STEP 3: Only try real send if TCP worked
+        if ($socket === false) {
+            $result['step_3_smtp_send'] = ['skipped' => true, 'reason' => 'TCP connect failed, skipping SMTP send'];
+            return response()->json($result);
+        }
+
+        try {
+            \Illuminate\Support\Facades\Mail::raw('SMTP diagnostic test at ' . now(), function ($msg) use ($fromAddress) {
+                $msg->to($fromAddress)->subject('SMTP Diagnostic Test');
+            });
+            $result['step_3_smtp_send'] = ['success' => true, 'message' => 'Test email sent successfully to ' . $fromAddress];
+        } catch (\Throwable $e) {
+            $result['step_3_smtp_send'] = [
+                'success' => false,
+                'exception_class' => get_class($e),
+                'message' => $e->getMessage(),
+                'previous' => $e->getPrevious() ? [
+                    'class' => get_class($e->getPrevious()),
+                    'message' => $e->getPrevious()->getMessage(),
+                ] : null,
+            ];
+        }
+
+        return response()->json($result);
+    }
+
     public function cleanup()
     {
         $deletedAlerts = Alert::where('message', 'like', '%TEST ALERT%')->count();
