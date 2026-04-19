@@ -27,7 +27,7 @@ const char* DEVICE_ID = "ESP32_001";
 /* ================= CALIBRATION ================= */
 // Backend derives weight as: kg = hx711_raw / BIN2_RAW_PER_KG
 // TODO: recalibrate with a known weight — same process as Bin 1
-#define BIN2_RAW_PER_KG   117786.0f
+#define BIN2_RAW_PER_KG   21201.0f
 #define WEIGHT_DEADBAND_KG  0.05f
 
 #define SEND_INTERVAL_MS  30000UL

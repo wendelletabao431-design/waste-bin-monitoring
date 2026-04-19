@@ -51,15 +51,16 @@ const char* DEVICE_ID = "ESP32_001";
 #define BATTERY_PIN 33
 
 /* ================= CALIBRATION ================= */
-// Bin 1: empty=58cm, full=10cm  (50% at 34cm, 90% at 14.8cm)
-// Bin 2: empty=48cm, full=10cm  (50% at 29cm, 90% at 13.8cm)
+// Bin 1: empty=58cm, full=14.8cm  (50% at 34cm)
+// Bin 2: empty=48cm, full=13.8cm  (50% at 29cm)
 #define BIN1_EMPTY         58.0f
 #define BIN2_EMPTY         48.0f
-#define BIN_FULL           10.0f
+#define BIN1_FULL          14.8f
+#define BIN2_FULL          13.8f
 
 // HX711 scale factors — for local display/debug only; raw ADC is sent to backend
-#define SCALE1             119800.0f   // raw counts per kg — Bin 1
-#define SCALE2             117786.0f   // raw counts per kg — Bin 2
+#define SCALE1              21564.0f   // raw counts per kg — Bin 1 (calibrated)
+#define SCALE2              21201.0f   // raw counts per kg — Bin 2 (calibrated)
 // Suppress HX711 noise below this weight (raw drift after tare ≈ ±5000 counts ≈ 42g)
 #define WEIGHT_DEADBAND_KG 0.05f
 
@@ -121,8 +122,8 @@ float readUltrasonicFiltered(int trig, int echo) {
   return count ? total / count : -1.0f;
 }
 
-float getPercent(float dist, float emptyDist) {
-  float level = (emptyDist - dist) / (emptyDist - BIN_FULL) * 100.0f;
+float getPercent(float dist, float emptyDist, float fullDist) {
+  float level = (emptyDist - dist) / (emptyDist - fullDist) * 100.0f;
   return constrain(level, 0.0f, 100.0f);
 }
 
@@ -208,11 +209,13 @@ bool quickGasDetected() {
 void readAllSensors() {
   d1_cm = readUltrasonicFiltered(TRIG1, ECHO1);
   d2_cm = readUltrasonicFiltered(TRIG2, ECHO2);
-  bin1Level = (d1_cm >= 0) ? getPercent(d1_cm, BIN1_EMPTY) : 0.0f;
-  bin2Level = (d2_cm >= 0) ? getPercent(d2_cm, BIN2_EMPTY) : 0.0f;
+  bin1Level = (d1_cm >= 0) ? getPercent(d1_cm, BIN1_EMPTY, BIN1_FULL) : 0.0f;
+  bin2Level = (d2_cm >= 0) ? getPercent(d2_cm, BIN2_EMPTY, BIN2_FULL) : 0.0f;
 
   hx1Raw = scale1.get_value(10);
   hx2Raw = scale2.get_value(10);
+  if (hx1Raw < 0) hx1Raw = -hx1Raw;    // load cell wired inverted — flip sign
+  if (hx2Raw < 0) hx2Raw = -hx2Raw;
   bin1Weight = (float)hx1Raw / SCALE1;
   bin2Weight = (float)hx2Raw / SCALE2;
   if (bin1Weight < WEIGHT_DEADBAND_KG) bin1Weight = 0.0f;

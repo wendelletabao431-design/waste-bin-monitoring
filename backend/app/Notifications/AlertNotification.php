@@ -21,19 +21,21 @@ class AlertNotification extends Notification
     public function toMail(object $notifiable): MailMessage
     {
         $severity = match($this->alert->type) {
-            'gas_leak' => 'CRITICAL',
-            'trash_full' => 'CRITICAL',
-            'gas_elevated' => 'WARNING',
-            'trash_warning' => 'WARNING',
-            default => 'INFO',
+            'gas_leak'       => 'CRITICAL',
+            'trash_full'     => 'CRITICAL',
+            'gas_elevated'   => 'WARNING',
+            'trash_warning'  => 'WARNING',
+            'battery_health' => 'HEALTH REPORT',
+            default          => 'INFO',
         };
 
         $emoji = match($this->alert->type) {
-            'gas_leak' => '🔴',
-            'trash_full' => '🔴',
-            'gas_elevated' => '🟡',
-            'trash_warning' => '🟡',
-            default => 'ℹ️',
+            'gas_leak'       => '🔴',
+            'trash_full'     => '🔴',
+            'gas_elevated'   => '🟡',
+            'trash_warning'  => '🟡',
+            'battery_health' => '🔋',
+            default          => 'ℹ️',
         };
 
         $frontendUrl = config('app.frontend_url', 'https://smart-trash-bin-mu.vercel.app');

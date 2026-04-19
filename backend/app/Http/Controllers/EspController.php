@@ -140,6 +140,7 @@ class EspController extends Controller
         $this->checkFillAlerts($device, $fillPercent);
         $this->checkGasAlerts($device, $gasLevel);
         $this->checkWeightAlerts($device, $weightKg, $binNumber);
+        $this->checkBatteryHealth($device, $batteryPercent, $fillPercent, $weightKg, $gasLevel);
 
         // Store all readings with raw values
         $device->readings()->createMany([
@@ -459,7 +460,9 @@ class EspController extends Controller
                 ['type' => 'trash_full', 'status' => 'active'],
                 ['message' => "Bin is critical ({$fillValue}% full)"]
             );
-            if ($alert->wasRecentlyCreated) {
+            // Fire immediately on first create, then re-notify every 5 minutes
+            if ($alert->wasRecentlyCreated || $alert->updated_at->diffInMinutes(now()) >= 5) {
+                $alert->touch();
                 event(new AlertCreated($alert));
             }
         } elseif ($fillValue >= $warningThreshold) {
@@ -467,7 +470,9 @@ class EspController extends Controller
                 ['type' => 'trash_warning', 'status' => 'active'],
                 ['message' => "Bin is getting full ({$fillValue}% full)"]
             );
-            if ($alert->wasRecentlyCreated) {
+            // Fire immediately on first create, then re-notify every 5 minutes
+            if ($alert->wasRecentlyCreated || $alert->updated_at->diffInMinutes(now()) >= 5) {
+                $alert->touch();
                 event(new AlertCreated($alert));
             }
         } elseif ($fillValue < 40) {
@@ -522,12 +527,16 @@ class EspController extends Controller
      */
     private function checkGasAlerts(Device $device, int $gasLevel): void
     {
-        if ($gasLevel >= 1) {
+        $dangerousMin = config('sensors.mq_dangerous_min', 500);
+
+        if ($gasLevel >= $dangerousMin) {
             $alert = $device->alerts()->firstOrCreate(
                 ['type' => 'gas_leak', 'status' => 'active'],
-                ['message' => 'Dangerous gas level detected! Possible flammable gas.']
+                ['message' => "Flammable gas detected! MQ raw: {$gasLevel}"]
             );
-            if ($alert->wasRecentlyCreated) {
+            // Alert immediately on detection, then re-notify every 5 minutes
+            if ($alert->wasRecentlyCreated || $alert->updated_at->diffInMinutes(now()) >= 5) {
+                $alert->touch();
                 event(new AlertCreated($alert));
             }
         } else {
@@ -539,9 +548,47 @@ class EspController extends Controller
     }
 
     /**
+     * Send a hardware health summary email when battery drops by 10%.
+     * Includes battery, fill, weight, and gas status for all components.
+     */
+    private function checkBatteryHealth(Device $device, float $batteryPercent, float $fillPercent, float $weightKg, int $gasLevel): void
+    {
+        // Round down to nearest 10% milestone (e.g. 87% → 80)
+        $milestone = floor($batteryPercent / 10) * 10;
+
+        // Retrieve last notified milestone stored on the device
+        $lastMilestone = (int) ($device->meta['battery_milestone'] ?? 100);
+
+        // Only notify when crossing a new lower milestone
+        if ($milestone >= $lastMilestone) return;
+
+        // Save new milestone so we don't re-notify until the next drop
+        $device->update(['meta' => array_merge($device->meta ?? [], ['battery_milestone' => $milestone])]);
+
+        $gasStatus   = $gasLevel >= config('sensors.mq_dangerous_min', 500) ? 'DANGEROUS' : 'Normal';
+        $battStatus  = $batteryPercent <= 20 ? 'CRITICAL' : ($batteryPercent <= 50 ? 'LOW' : 'OK');
+
+        $alert = $device->alerts()->create([
+            'type'    => 'battery_health',
+            'status'  => 'active',
+            'message' => implode(' | ', [
+                "Battery: {$batteryPercent}% ({$battStatus})",
+                "Waste Level: {$fillPercent}%",
+                "Weight: {$weightKg} kg",
+                "Gas: {$gasStatus}",
+            ]),
+        ]);
+
+        event(new AlertCreated($alert));
+
+        // Auto-resolve immediately — this is a one-shot health report, not an ongoing alert
+        $alert->update(['status' => 'resolved']);
+    }
+
+    /**
      * Legacy endpoint for backwards compatibility
      * POST /api/esp/readings
-     * 
+     *
      * @deprecated Use receiveBinData() instead
      */
     public function storeReadings(Request $request)

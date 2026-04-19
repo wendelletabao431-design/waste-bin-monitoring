@@ -28,7 +28,7 @@ return [
     'ultrasonic' => [
         'bin_1' => [
             'empty_distance_cm' => 58.0,
-            'full_distance_cm'  => 10.0,
+            'full_distance_cm'  => 14.8,
             'distance_markers_cm' => [
                 50 => 34.0,   // 50% fill
                 90 => 14.8,   // 90% fill (critical alert)
@@ -36,7 +36,7 @@ return [
         ],
         'bin_2' => [
             'empty_distance_cm' => 48.0,
-            'full_distance_cm'  => 10.0,
+            'full_distance_cm'  => 13.8,
             'distance_markers_cm' => [
                 50 => 29.0,   // 50% fill
                 90 => 13.8,   // 90% fill (critical alert)
@@ -68,7 +68,7 @@ return [
             'critical_weight_kg' => 36.0,
         ],
         'bin_2' => [
-            'scale_raw_per_kg'   => 117786.0,
+            'scale_raw_per_kg'   => 21201.0,
             'max_weight_kg'      => 20.0,
             'warning_weight_kg'  => 10.0,
             'critical_weight_kg' => 18.0,
