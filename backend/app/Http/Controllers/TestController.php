@@ -7,6 +7,7 @@ use App\Models\Device;
 use App\Models\Alert;
 use App\Notifications\AlertNotification;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class TestController extends Controller
@@ -216,6 +217,94 @@ class TestController extends Controller
                     'message' => $e->getPrevious()->getMessage(),
                 ] : null,
             ];
+        }
+
+        return response()->json($result);
+    }
+
+    public function diagnoseBrevoApi()
+    {
+        $apiKey      = config('services.brevo.api_key');
+        $fromAddress = config('mail.from.address');
+        $fromName    = config('mail.from.name');
+
+        $result = [
+            'timestamp' => now()->toISOString(),
+            'config' => [
+                'brevo_api_key_set'    => !empty($apiKey),
+                'brevo_api_key_length' => strlen((string) $apiKey),
+                'brevo_api_key_prefix' => substr((string) $apiKey, 0, 8),
+                'from_address'         => $fromAddress,
+                'from_name'            => $fromName,
+            ],
+            'step_1_account_check' => null,
+            'step_2_send_test'     => null,
+        ];
+
+        if (empty($apiKey)) {
+            $result['error'] = 'BREVO_API_KEY is not set in Railway environment variables.';
+            return response()->json($result);
+        }
+
+        // STEP 1: Check API key validity by fetching account info
+        try {
+            $accountResponse = Http::withHeaders([
+                'api-key' => $apiKey,
+                'accept'  => 'application/json',
+            ])->timeout(15)->get('https://api.brevo.com/v3/account');
+
+            $result['step_1_account_check'] = [
+                'status'  => $accountResponse->status(),
+                'ok'      => $accountResponse->successful(),
+                'body'    => $accountResponse->successful()
+                    ? $accountResponse->json()
+                    : $accountResponse->body(),
+            ];
+
+            if (!$accountResponse->successful()) {
+                $result['conclusion'] = 'Brevo API rejected the key (HTTP ' . $accountResponse->status() . '). Regenerate the API key in Brevo dashboard → SMTP & API → API Keys, and update BREVO_API_KEY in Railway.';
+                return response()->json($result);
+            }
+        } catch (\Throwable $e) {
+            $result['step_1_account_check'] = [
+                'exception' => get_class($e),
+                'message'   => $e->getMessage(),
+            ];
+            $result['conclusion'] = 'Could not reach api.brevo.com — Railway may be blocking outbound HTTPS too, or DNS is broken.';
+            return response()->json($result);
+        }
+
+        // STEP 2: Actually send a test email
+        try {
+            $sendResponse = Http::withHeaders([
+                'api-key'      => $apiKey,
+                'accept'       => 'application/json',
+                'content-type' => 'application/json',
+            ])->timeout(30)->post('https://api.brevo.com/v3/smtp/email', [
+                'sender' => [
+                    'email' => $fromAddress,
+                    'name'  => $fromName ?? 'Smart Trash Bin',
+                ],
+                'to' => [['email' => $fromAddress, 'name' => 'Diagnostic']],
+                'subject'     => 'Brevo HTTP API diagnostic test',
+                'htmlContent' => '<p>Brevo HTTP API is working from Railway.</p><p>Sent at ' . now()->toISOString() . '</p>',
+            ]);
+
+            $result['step_2_send_test'] = [
+                'status' => $sendResponse->status(),
+                'ok'     => $sendResponse->successful(),
+                'body'   => $sendResponse->json() ?? $sendResponse->body(),
+            ];
+
+            $result['conclusion'] = $sendResponse->successful()
+                ? 'Success — Brevo HTTP API works from Railway. Alerts will now send.'
+                : 'Brevo rejected the send. Check sender verification: the FROM address must be verified under Brevo → Senders & IP → Senders.';
+        } catch (\Throwable $e) {
+            $result['step_2_send_test'] = [
+                'exception' => get_class($e),
+                'message'   => $e->getMessage(),
+            ];
+            $result['conclusion'] = 'Send failed due to exception.';
         }
 
         return response()->json($result);
