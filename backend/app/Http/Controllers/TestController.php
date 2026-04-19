@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Device;
 use App\Models\Alert;
+use App\Events\AlertCreated;
 use App\Notifications\AlertNotification;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -308,6 +310,92 @@ class TestController extends Controller
         }
 
         return response()->json($result);
+    }
+
+    public function fireAlert(Request $request)
+    {
+        $type = (string) $request->query('type', 'gas_leak');
+        $deviceUid = (string) $request->query('device', '');
+
+        $validTypes = [
+            'gas_leak', 'gas_elevated',
+            'trash_full', 'trash_warning',
+            'weight_critical', 'weight_warning',
+            'battery_health',
+        ];
+
+        if (!in_array($type, $validTypes, true)) {
+            return response()->json([
+                'error'       => "Invalid type '{$type}'.",
+                'valid_types' => $validTypes,
+                'usage'       => 'GET /api/test/fire-alert?type=gas_leak&device=ESP32_001_bin1',
+            ], 400);
+        }
+
+        $device = $deviceUid !== ''
+            ? Device::where('uid', $deviceUid)->first()
+            : Device::where('uid', 'like', 'ESP32_001_%')->first();
+
+        if (!$device) {
+            $device = Device::whereNotNull('parent_device_id')->first();
+        }
+        if (!$device) {
+            $device = Device::first();
+        }
+        if (!$device) {
+            return response()->json(['error' => 'No device exists in DB. Send at least one bin-data payload first.'], 404);
+        }
+
+        $templates = [
+            'gas_leak'        => '🔥 TEST: Flammable gas detected! MQ raw: 850 (threshold: 500).',
+            'gas_elevated'   => '⚠️ TEST: Gas level elevated. MQ raw: 420.',
+            'trash_full'      => '🚨 TEST: Bin is full. Fill level: 95%.',
+            'trash_warning'   => '⚠️ TEST: Bin filling up. Fill level: 65%.',
+            'weight_critical' => '⚖️ TEST: Weight critical. Current: 38.0 kg (max: 40 kg).',
+            'weight_warning'  => '⚖️ TEST: Weight warning. Current: 22.0 kg.',
+            'battery_health'  => '🔋 TEST: Battery dropped to 70%. Fill 45%, Weight 12 kg, Gas normal.',
+        ];
+
+        $alert = Alert::create([
+            'device_id' => $device->id,
+            'type'      => $type,
+            'message'   => $templates[$type],
+            'status'    => 'active',
+        ]);
+
+        $recipients = User::where('notification_enabled', true)->pluck('email')->toArray();
+
+        try {
+            event(new AlertCreated($alert));
+            $dispatched = true;
+            $error = null;
+        } catch (\Throwable $e) {
+            $dispatched = false;
+            $error = [
+                'class'   => get_class($e),
+                'message' => $e->getMessage(),
+            ];
+            Log::error('fireAlert: AlertCreated event failed', $error);
+        }
+
+        return response()->json([
+            'status'            => $dispatched ? 'dispatched' : 'failed',
+            'alert'             => [
+                'id'      => $alert->id,
+                'type'    => $alert->type,
+                'message' => $alert->message,
+                'device'  => [
+                    'id'       => $device->id,
+                    'uid'      => $device->uid,
+                    'name'     => $device->name,
+                    'location' => $device->location,
+                ],
+            ],
+            'recipients_count'  => count($recipients),
+            'recipients'        => $recipients,
+            'error'             => $error,
+            'note'              => 'If dispatched=true and recipients have notification_enabled=true, the Brevo channel was called. Check inbox and spam. Check Brevo → Statistics for delivery status.',
+        ]);
     }
 
     public function cleanup()

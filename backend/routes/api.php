@@ -48,3 +48,4 @@ Route::get('/test/alerts', [TestController::class, 'testAlerts']);
 Route::get('/test/cleanup', [TestController::class, 'cleanup']);
 Route::get('/test/smtp-diagnose', [TestController::class, 'diagnoseSmtp']);
 Route::get('/test/brevo-diagnose', [TestController::class, 'diagnoseBrevoApi']);
+Route::get('/test/fire-alert', [TestController::class, 'fireAlert']);
