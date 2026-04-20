@@ -1,21 +1,3 @@
-/*
- * ESP32 Smart Trash Bin — Optimized Production Firmware
- *
- * Optimizations vs. esp32_firmware_fixed.ino:
- *   • F() macros on all string literals (keeps strings in flash, reduces heap pressure)
- *   • sendData() takes const char* (no String copy on every call)
- *   • JSON built with String.reserve(220) — stops 15+ heap reallocations per send
- *   • Dead set_scale() calls removed (we compute kg from raw directly)
- *   • Ultrasonic constant folded: 0.0343/2 → 0.01715
- *   • Serial.print + println used instead of "[HTTP] ..." + json concatenation
- *
- * Added features:
- *   • Periodic LCD refresh every 5 s in solar mode (live weight between 60 s sends)
- *   • INA219 init check — logs a warning if sensor missing, keeps device safe in idle mode
- *   • Task watchdog (30 s) — auto-resets ESP32 if loop hangs on a sensor/WiFi/HTTP call
- *   • HTTP retry — one retry after a 2 s backoff if POST fails
- */
-
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -51,15 +33,14 @@ const char* DEVICE_ID = "ESP32_001";
 #define BATTERY_PIN 33
 
 /* ================= CALIBRATION ================= */
-// Bin 1: empty=58cm, full=14.8cm  (50% at 34cm)
-// Bin 2: empty=48cm, full=13.8cm  (50% at 29cm)
-#define BIN1_EMPTY         58.0f
-#define BIN2_EMPTY         48.0f
-#define BIN1_FULL          14.8f
-#define BIN2_FULL          13.8f
+// Bin 1 & Bin 2: empty=46cm, full=4.3cm  (50% at ~25.1cm) — field-calibrated 2026-04-20
+#define BIN1_EMPTY         46.0f
+#define BIN2_EMPTY         46.0f
+#define BIN1_FULL           4.3f
+#define BIN2_FULL           4.3f
 
 // HX711 scale factors — for local display/debug only; raw ADC is sent to backend
-#define SCALE1              112133.0f  // raw counts per kg — Bin 1 (calibrated)
+#define SCALE1              112133.0f  // raw counts per kg — Bin 1 (matches backend)
 #define SCALE2              112133.0f  // raw counts per kg — Bin 2 (same as Bin 1)
 // Suppress HX711 noise below this weight (raw drift after tare ≈ ±5000 counts ≈ 42g)
 #define WEIGHT_DEADBAND_KG 0.05f
