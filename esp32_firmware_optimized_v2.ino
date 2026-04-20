@@ -156,27 +156,20 @@ bool maintainWiFi(unsigned long timeoutMs = 15000) {
 }
 
 /* ================= POWER / WAKE ================= */
+// HX711s are kept powered continuously — power cycling drifts the zero offset,
+// and the tare captured at setup no longer matches after power_up. Current draw
+// is ~1.5 mA per HX711, negligible vs WiFi. Matches bin1_test.ino behavior.
 void wakeSensors(const char* reason, unsigned long stabilizeMs = SENSOR_WAKE_STABILIZE_MS) {
   if (!sensorsAwake) {
     Serial.printf("[Wake] Sensors ON for %s\n", reason);
-    scale1.power_up();
-    scale2.power_up();
     sensorsAwake = true;
   }
-
-  if (stabilizeMs > 0) {
-    delay(stabilizeMs);
-    // Discard a few noisy post-wake samples
-    scale1.get_value(3);
-    scale2.get_value(3);
-  }
+  if (stabilizeMs > 0) delay(stabilizeMs);
 }
 
 void sleepSensors() {
   if (!sensorsAwake) return;
-  Serial.println(F("[Sleep] Sensors idle"));
-  scale1.power_down();
-  scale2.power_down();
+  Serial.println(F("[Sleep] Sensors idle (HX711 stays powered)"));
   sensorsAwake = false;
 }
 
@@ -194,6 +187,7 @@ void readAllSensors() {
   bin2Level = (d2_cm >= 0) ? getPercent(d2_cm, BIN2_EMPTY, BIN2_FULL) : 0.0f;
 
   hx1Raw = scale1.get_value(10);
+  delay(20);                             // let 3.3V rail settle before the next HX711 read
   hx2Raw = scale2.get_value(10);
   if (hx1Raw < 0) hx1Raw = -hx1Raw;    // load cell wired inverted — flip sign
   if (hx2Raw < 0) hx2Raw = -hx2Raw;
