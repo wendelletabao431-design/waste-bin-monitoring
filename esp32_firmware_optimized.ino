@@ -59,8 +59,8 @@ const char* DEVICE_ID = "ESP32_001";
 #define BIN2_FULL          13.8f
 
 // HX711 scale factors — for local display/debug only; raw ADC is sent to backend
-#define SCALE1              21564.0f   // raw counts per kg — Bin 1 (calibrated)
-#define SCALE2              21201.0f   // raw counts per kg — Bin 2 (calibrated)
+#define SCALE1              112133.0f  // raw counts per kg — Bin 1 (calibrated)
+#define SCALE2              112133.0f  // raw counts per kg — Bin 2 (same as Bin 1)
 // Suppress HX711 noise below this weight (raw drift after tare ≈ ±5000 counts ≈ 42g)
 #define WEIGHT_DEADBAND_KG 0.05f
 
@@ -223,7 +223,7 @@ void readAllSensors() {
 
   gas1 = analogRead(MQ1_AO);
   gas2 = analogRead(MQ2_AO);
-  battery_voltage = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 4.0f;
+  battery_voltage = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 3.857f;
 
   if (ina219OK) {
     charge_current = ina219.getCurrent_mA() / 1000.0f;

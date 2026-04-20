@@ -9,7 +9,7 @@
 const char* ssid      = "TABAO_FAM";
 const char* password  = "JOAN062199";
 const char* serverURL = "https://sincere-creativity-production.up.railway.app/api/bin-data";
-const char* DEVICE_ID = "ESP32_TEST_001";
+const char* DEVICE_ID = "ESP32_001";
 
 /* ================= PINS ================= */
 #define LED_POWER   26
@@ -208,7 +208,7 @@ void loop() {
     float d2   = readUltrasonic(TRIG2, ECHO2);
     int   g1   = analogRead(MQ1_AO);
     int   g2   = analogRead(MQ2_AO);
-    float batt = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 4.0f;
+    float batt = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 3.857f;
 
     Serial.printf("[DATA] W1=%.2fkg D1=%.1f G1=%d | W2=%.2fkg D2=%.1f G2=%d | Batt=%.2f\n",
                   w1, d1, g1, w2, d2, g2, batt);

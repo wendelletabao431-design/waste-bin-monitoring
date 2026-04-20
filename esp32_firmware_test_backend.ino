@@ -9,7 +9,7 @@
 const char* ssid      = "TABAO_FAM";
 const char* password  = "JOAN062199";
 const char* serverURL = "https://sincere-creativity-production.up.railway.app/api/bin-data";
-const char* DEVICE_ID = "ESP32_TEST_001";
+const char* DEVICE_ID = "ESP32_001";
 
 /* ================= PINS ================= */
 #define LED_POWER   26
@@ -102,7 +102,7 @@ void readAllSensors() {
   hx2Raw = scale2.get_value(10);
   gas1 = analogRead(MQ1_AO);
   gas2 = analogRead(MQ2_AO);
-  battery_voltage = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 4.0f;
+  battery_voltage = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 3.857f;
 
   Serial.printf("[S] d1=%.1f d2=%.1f hx1=%ld hx2=%ld g1=%d g2=%d batt=%.2fV\n",
     d1_cm, d2_cm, hx1Raw, hx2Raw, gas1, gas2, battery_voltage);
