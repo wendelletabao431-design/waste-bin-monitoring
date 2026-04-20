@@ -312,6 +312,90 @@ class TestController extends Controller
         return response()->json($result);
     }
 
+    public function diagnoseMailgun()
+    {
+        $apiKey   = config('services.mailgun.api_key');
+        $domain   = config('services.mailgun.domain');
+        $endpoint = config('services.mailgun.endpoint', 'api.mailgun.net');
+        $from     = config('mail.from.address');
+        $fromName = config('mail.from.name');
+
+        $result = [
+            'timestamp' => now()->toISOString(),
+            'config' => [
+                'mailgun_api_key_set'    => !empty($apiKey),
+                'mailgun_api_key_length' => strlen((string) $apiKey),
+                'mailgun_api_key_prefix' => substr((string) $apiKey, 0, 8),
+                'mailgun_domain'         => $domain,
+                'mailgun_endpoint'       => $endpoint,
+                'from_address'           => $from,
+                'from_name'              => $fromName,
+            ],
+            'step_1_domain_info' => null,
+            'step_2_send_test'   => null,
+        ];
+
+        if (empty($apiKey) || empty($domain)) {
+            $result['error'] = 'MAILGUN_API_KEY or MAILGUN_DOMAIN not set in Railway variables.';
+            return response()->json($result);
+        }
+
+        // STEP 1: Verify API key + domain by fetching domain info
+        try {
+            $domainResp = Http::withBasicAuth('api', $apiKey)
+                ->timeout(15)
+                ->get("https://{$endpoint}/v4/domains/{$domain}");
+
+            $result['step_1_domain_info'] = [
+                'status' => $domainResp->status(),
+                'ok'     => $domainResp->successful(),
+                'body'   => $domainResp->successful() ? $domainResp->json() : $domainResp->body(),
+            ];
+
+            if (!$domainResp->successful()) {
+                $result['conclusion'] = 'Mailgun rejected API key or domain (HTTP ' . $domainResp->status() . '). Check MAILGUN_API_KEY and MAILGUN_DOMAIN in Railway. For EU region, set MAILGUN_ENDPOINT=api.eu.mailgun.net.';
+                return response()->json($result);
+            }
+        } catch (\Throwable $e) {
+            $result['step_1_domain_info'] = [
+                'exception' => get_class($e),
+                'message'   => $e->getMessage(),
+            ];
+            $result['conclusion'] = 'Could not reach api.mailgun.net.';
+            return response()->json($result);
+        }
+
+        // STEP 2: Send a test email to the FROM address (must be an authorized sandbox recipient)
+        try {
+            $sendResp = Http::asForm()
+                ->withBasicAuth('api', $apiKey)
+                ->timeout(30)
+                ->post("https://{$endpoint}/v3/{$domain}/messages", [
+                    'from'    => $fromName ? "{$fromName} <{$from}>" : $from,
+                    'to'      => $from,
+                    'subject' => 'Mailgun HTTPS API diagnostic test',
+                    'html'    => '<p>Mailgun HTTPS API is working from Railway.</p><p>Sent at ' . now()->toISOString() . '</p>',
+                ]);
+
+            $result['step_2_send_test'] = [
+                'status' => $sendResp->status(),
+                'ok'     => $sendResp->successful(),
+                'body'   => $sendResp->json() ?? $sendResp->body(),
+            ];
+
+            $result['conclusion'] = $sendResp->successful()
+                ? 'Success — Mailgun HTTPS API works from Railway. Now run /api/test/fire-alert?type=gas_leak'
+                : 'Mailgun rejected the send. If this is sandbox mode, every recipient email must be authorized in Mailgun → Sending → Domains → ' . $domain . ' → Authorized Recipients.';
+        } catch (\Throwable $e) {
+            $result['step_2_send_test'] = [
+                'exception' => get_class($e),
+                'message'   => $e->getMessage(),
+            ];
+        }
+
+        return response()->json($result);
+    }
+
     public function fireAlert(Request $request)
     {
         $type = (string) $request->query('type', 'gas_leak');

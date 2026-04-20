@@ -26,6 +26,12 @@ return [
         'api_key' => env('BREVO_API_KEY'),
     ],
 
+    'mailgun' => [
+        'api_key'  => env('MAILGUN_API_KEY'),
+        'domain'   => env('MAILGUN_DOMAIN'),
+        'endpoint' => env('MAILGUN_ENDPOINT', 'api.mailgun.net'),
+    ],
+
     'ses' => [
         'key' => env('AWS_ACCESS_KEY_ID'),
         'secret' => env('AWS_SECRET_ACCESS_KEY'),

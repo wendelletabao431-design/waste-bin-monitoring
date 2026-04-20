@@ -5,7 +5,7 @@ namespace App\Notifications;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 use App\Models\Alert;
-use App\Notifications\Channels\BrevoChannel;
+use App\Notifications\Channels\MailgunChannel;
 
 class AlertNotification extends Notification
 {
@@ -15,10 +15,20 @@ class AlertNotification extends Notification
 
     public function via(object $notifiable): array
     {
-        return [BrevoChannel::class];
+        return [MailgunChannel::class];
+    }
+
+    public function toMailgun(object $notifiable): array
+    {
+        return $this->buildPayload();
     }
 
     public function toBrevo(object $notifiable): array
+    {
+        return $this->buildPayload();
+    }
+
+    private function buildPayload(): array
     {
         $severity = match($this->alert->type) {
             'gas_leak'       => 'CRITICAL',
