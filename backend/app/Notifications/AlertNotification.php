@@ -5,7 +5,7 @@ namespace App\Notifications;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 use App\Models\Alert;
-use App\Notifications\Channels\MailgunChannel;
+use App\Notifications\Channels\BrevoChannel;
 
 class AlertNotification extends Notification
 {
@@ -15,7 +15,7 @@ class AlertNotification extends Notification
 
     public function via(object $notifiable): array
     {
-        return [MailgunChannel::class];
+        return [BrevoChannel::class];
     }
 
     public function toMailgun(object $notifiable): array
