@@ -62,13 +62,13 @@ return [
     */
     'load_cell' => [
         'bin_1' => [
-            'scale_raw_per_kg'   => 22235.0,
+            'scale_raw_per_kg'   => 21564.0,
             'max_weight_kg'      => 40.0,
             'warning_weight_kg'  => 20.0,
             'critical_weight_kg' => 36.0,
         ],
         'bin_2' => [
-            'scale_raw_per_kg'   => 22235.0,
+            'scale_raw_per_kg'   => 21564.0,
             'max_weight_kg'      => 20.0,
             'warning_weight_kg'  => 10.0,
             'critical_weight_kg' => 18.0,
