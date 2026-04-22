@@ -305,6 +305,11 @@ class EspController extends Controller
     {
         $maxWeight = config("sensors.load_cell.bin_{$binNumber}.max_weight_kg", 20.0);
 
+        // raw=0 means sensor not connected — avoid phantom weight from offset formula
+        if ($hx711Raw == 0) {
+            return 0.0;
+        }
+
         $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_kg", 22600.0);
 
         if ($scale == 0) {
