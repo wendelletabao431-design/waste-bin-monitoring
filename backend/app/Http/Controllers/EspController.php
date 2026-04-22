@@ -305,31 +305,23 @@ class EspController extends Controller
     {
         $maxWeight = config("sensors.load_cell.bin_{$binNumber}.max_weight_kg", 20.0);
 
-        // Guard: near-zero means empty or disconnected sensor.
-        // With scale ~119,800 raw/kg, 1,000 raw ≈ 8 g — safe noise floor.
-        if (abs($hx711Raw) < 1000) {
-            return 0.0;
-        }
-
-        // Calibrated scale factors from calibration document (raw units per kg)
-        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_kg",
-            $binNumber === 1 ? 119800.0 : 117786.0
-        );
+        $scale = config("sensors.load_cell.bin_{$binNumber}.scale_raw_per_kg", 22600.0);
 
         if ($scale == 0) {
             Log::error("Invalid weight calibration: scale factor is zero", ['bin' => $binNumber]);
             return 0.0;
         }
 
-        // weight_kg = tared_raw / scale_raw_per_kg
-        $weight = $hx711Raw / $scale;
+        // Firmware sends untared raw. Formula: weight_kg = (empty_offset - raw) / scale
+        $emptyOffset = config("sensors.load_cell.bin_{$binNumber}.empty_offset_raw", 313000.0);
+        $weight      = ($emptyOffset - $hx711Raw) / $scale;
 
-        // Log at INFO level so it appears in Railway production logs
         Log::info("Weight calculation", [
-            'bin'              => $binNumber,
-            'hx711_tared_raw'  => $hx711Raw,
-            'scale_raw_per_kg' => $scale,
-            'calculated_kg'    => round($weight, 3),
+            'bin'          => $binNumber,
+            'hx711_raw'    => $hx711Raw,
+            'empty_offset' => $emptyOffset,
+            'scale'        => $scale,
+            'calculated_kg'=> round($weight, 3),
         ]);
 
         return max(0.0, min($maxWeight, $weight));
