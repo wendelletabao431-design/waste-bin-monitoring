@@ -482,6 +482,84 @@ class TestController extends Controller
         ]);
     }
 
+    public function diagnoseGmail()
+    {
+        $clientId     = config('services.gmail.client_id');
+        $clientSecret = config('services.gmail.client_secret');
+        $refreshToken = config('services.gmail.refresh_token');
+        $from         = config('services.gmail.from');
+
+        $result = [
+            'timestamp' => now()->toISOString(),
+            'config' => [
+                'client_id_set'     => !empty($clientId),
+                'client_secret_set' => !empty($clientSecret),
+                'refresh_token_set' => !empty($refreshToken),
+                'from'              => $from,
+            ],
+            'step_1_token' => null,
+            'step_2_send'  => null,
+        ];
+
+        if (!$clientId || !$clientSecret || !$refreshToken) {
+            $result['error'] = 'One or more GMAIL_* env vars are missing in Railway.';
+            return response()->json($result);
+        }
+
+        // STEP 1: Get access token
+        $tokenResp = Http::timeout(15)->post('https://oauth2.googleapis.com/token', [
+            'client_id'     => $clientId,
+            'client_secret' => $clientSecret,
+            'refresh_token' => $refreshToken,
+            'grant_type'    => 'refresh_token',
+        ]);
+
+        $result['step_1_token'] = [
+            'status' => $tokenResp->status(),
+            'ok'     => $tokenResp->successful(),
+            'body'   => $tokenResp->successful()
+                ? ['access_token_length' => strlen($tokenResp->json('access_token') ?? '')]
+                : $tokenResp->json(),
+        ];
+
+        if (!$tokenResp->successful()) {
+            $result['conclusion'] = 'Token refresh failed — check GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN.';
+            return response()->json($result);
+        }
+
+        $accessToken = $tokenResp->json('access_token');
+
+        // STEP 2: Send test email to the FROM address itself
+        $message = implode("\r\n", [
+            "From: {$from}",
+            "To: {$from}",
+            'Subject: Gmail API Diagnostic Test',
+            'MIME-Version: 1.0',
+            'Content-Type: text/html; charset=UTF-8',
+            '',
+            '<p>Gmail API is working from Railway.</p><p>Sent at ' . now()->toISOString() . '</p>',
+        ]);
+        $raw = rtrim(strtr(base64_encode($message), '+/', '-_'), '=');
+
+        $sendResp = Http::withToken($accessToken)
+            ->timeout(30)
+            ->post('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', [
+                'raw' => $raw,
+            ]);
+
+        $result['step_2_send'] = [
+            'status' => $sendResp->status(),
+            'ok'     => $sendResp->successful(),
+            'body'   => $sendResp->json() ?? $sendResp->body(),
+        ];
+
+        $result['conclusion'] = $sendResp->successful()
+            ? 'Gmail API works. Check ' . $from . ' inbox and Sent folder.'
+            : 'Gmail send failed. See body for details.';
+
+        return response()->json($result);
+    }
+
     public function cleanup()
     {
         $deletedAlerts = Alert::where('message', 'like', '%TEST ALERT%')->count();

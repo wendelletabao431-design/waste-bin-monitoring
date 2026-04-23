@@ -50,3 +50,4 @@ Route::get('/test/smtp-diagnose', [TestController::class, 'diagnoseSmtp']);
 Route::get('/test/brevo-diagnose', [TestController::class, 'diagnoseBrevoApi']);
 Route::get('/test/mailgun-diagnose', [TestController::class, 'diagnoseMailgun']);
 Route::get('/test/fire-alert', [TestController::class, 'fireAlert']);
+Route::get('/test/gmail-diagnose', [TestController::class, 'diagnoseGmail']);
