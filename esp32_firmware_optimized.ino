@@ -1,21 +1,3 @@
-/*
- * ESP32 Smart Trash Bin — Optimized Production Firmware
- *
- * Optimizations vs. esp32_firmware_fixed.ino:
- *   • F() macros on all string literals (keeps strings in flash, reduces heap pressure)
- *   • sendData() takes const char* (no String copy on every call)
- *   • JSON built with String.reserve(220) — stops 15+ heap reallocations per send
- *   • Dead set_scale() calls removed (we compute kg from raw directly)
- *   • Ultrasonic constant folded: 0.0343/2 → 0.01715
- *   • Serial.print + println used instead of "[HTTP] ..." + json concatenation
- *
- * Added features:
- *   • Periodic LCD refresh every 5 s in solar mode (live weight between 60 s sends)
- *   • INA219 init check — logs a warning if sensor missing, keeps device safe in idle mode
- *   • Task watchdog (30 s) — auto-resets ESP32 if loop hangs on a sensor/WiFi/HTTP call
- *   • HTTP retry — one retry after a 2 s backoff if POST fails
- */
-
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>

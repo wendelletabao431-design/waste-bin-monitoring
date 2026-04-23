@@ -27,7 +27,7 @@ const char* DEVICE_ID = "ESP32_001";
 /* ================= CALIBRATION ================= */
 // Backend derives weight as: kg = hx711_raw / BIN1_RAW_PER_KG
 // Firmware sends raw directly — no reverse-compute needed
-#define BIN1_RAW_PER_KG   112133.0f
+#define BIN1_RAW_PER_KG   21564.0f
 #define WEIGHT_DEADBAND_KG  0.05f
 
 #define SEND_INTERVAL_MS  30000UL
@@ -158,7 +158,7 @@ void loop() {
     float weight   = readWeight();
     float distance = readUltrasonic();
     int   gas      = analogRead(MQ1_AO);
-    float batt     = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 3.857f;
+    float batt     = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 4.0f;
 
     Serial.printf("[DATA] W=%.2fkg D=%.1f Gas=%d Batt=%.2f\n",
                   weight, distance, gas, batt);

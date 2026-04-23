@@ -31,20 +31,19 @@ const char* DEVICE_ID = "ESP32_001";
 #define BATTERY_PIN 33
 
 /* ================= CALIBRATION ================= */
-#define BIN1_RAW_PER_KG   22235.0f
-#define BIN2_RAW_PER_KG   22235.0f
-#define WEIGHT_DEADBAND_KG  0.05f
+#define BIN1_RAW_PER_KG    21564.0f
+#define BIN2_RAW_PER_KG    21564.0f
+#define WEIGHT_DEADBAND_KG   0.05f
 
 #define SEND_INTERVAL_MS  30000UL
-#define LCD_REFRESH_MS     1000UL
+#define LCD_REFRESH_MS      500UL
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 Adafruit_INA219   ina219;
 HX711 scale1;
 HX711 scale2;
 
-bool ina219OK = false;
-
+bool ina219OK  = false;
 unsigned long lastSend = 0;
 unsigned long lastLcd  = 0;
 long hx1Raw = 0;
@@ -80,66 +79,56 @@ float readUltrasonic(int trig, int echo) {
 }
 
 /* ================= WEIGHT ================= */
-// Takes 10 individual samples with gaps, filters out-of-range readings,
-// and averages the valid ones — prevents spikes from corrupting the result.
-float stableWeight(HX711& scale, long& rawOut, float rawPerKg) {
-  float total = 0;
-  int   valid = 0;
-
-  for (int i = 0; i < 10; i++) {
-    long  r  = scale.get_value();
-    if (r < 0) r = -r;
-    float kg = (float)r / rawPerKg;
-    if (kg >= 0.0f && kg < 50.0f) {
-      total += kg;
-      rawOut = r;
-      valid++;
-    }
-    delay(15);
-  }
-
-  if (valid == 0) return 0.0f;
-
-  float avg = total / valid;
-  if (avg < WEIGHT_DEADBAND_KG) return 0.0f;
-  return avg;
-}
-
 float readWeight1() {
-  float kg = stableWeight(scale1, hx1Raw, BIN1_RAW_PER_KG);
+  hx1Raw = scale1.get_value(10);
+  if (hx1Raw < 0) hx1Raw = -hx1Raw;
+  float kg = (float)hx1Raw / BIN1_RAW_PER_KG;
+
   Serial.printf("[HX1] raw=%ld  kg=%.4f\n", hx1Raw, kg);
+  if (kg > 50.0f || kg < WEIGHT_DEADBAND_KG) return 0.0f;
   return kg;
 }
 
 float readWeight2() {
-  float kg = stableWeight(scale2, hx2Raw, BIN2_RAW_PER_KG);
+  unsigned long t = millis();
+  while (!scale2.is_ready()) {
+    if (millis() - t > 500) {
+      Serial.println("[HX2] timeout");
+      hx2Raw = 0;
+      return 0.0f;
+    }
+    delay(1);
+  }
+  hx2Raw = scale2.get_value(10);
+  if (hx2Raw < 0) hx2Raw = -hx2Raw;
+  float kg = (float)hx2Raw / BIN2_RAW_PER_KG;
+
   Serial.printf("[HX2] raw=%ld  kg=%.4f\n", hx2Raw, kg);
+  if (kg > 50.0f || kg < WEIGHT_DEADBAND_KG) return 0.0f;
   return kg;
 }
 
 /* ================= LCD ================= */
-// Line 0: V: 12.7V  I: 2.34A
-// Line 1: P: 29.3W
-void updateLCD() {
-  if (!ina219OK) return;
+void printWeight(float kg) {
+  if      (kg == 0.0f) lcd.print("----");
+  else if (kg < 1.0f)  { lcd.print((int)(kg * 1000)); lcd.print("g"); }
+  else                  { lcd.print(kg, 1);             lcd.print("kg"); }
+}
 
-  float voltage = ina219.getBusVoltage_V();
-  float current = ina219.getCurrent_mA() / 1000.0f;
-  float power   = ina219.getPower_mW()   / 1000.0f;
-
+void updateLCD(float w1, float d1, float w2, float d2) {
   lcd.clear();
 
   lcd.setCursor(0, 0);
-  lcd.print("V:");
-  lcd.print(voltage, 1);
-  lcd.print("V  I:");
-  lcd.print(current, 2);
-  lcd.print("A");
+  lcd.print("B1:");
+  printWeight(w1);
+  lcd.print(" D:");
+  if (d1 >= 0) lcd.print((int)d1); else lcd.print("ER");
 
   lcd.setCursor(0, 1);
-  lcd.print("P:");
-  lcd.print(power, 1);
-  lcd.print("W");
+  lcd.print("B2:");
+  printWeight(w2);
+  lcd.print(" D:");
+  if (d2 >= 0) lcd.print((int)d2); else lcd.print("ER");
 }
 
 /* ================= HTTP ================= */
@@ -192,11 +181,27 @@ void setup() {
   ina219OK = ina219.begin();
   if (!ina219OK) Serial.println("[INA219] NOT FOUND");
 
+  // Tare scale1 — same sequence as bin1_test (proven working)
   scale1.begin(HX1_DT, HX1_SCK);
-  scale2.begin(HX2_DT, HX2_SCK);
   delay(3000);
   scale1.tare();
-  scale2.tare();
+  Serial.printf("[TARE1] offset=%ld\n", scale1.get_offset());
+
+  // Tare scale2 only if hardware responds within 2s — avoids blocking reset
+  scale2.begin(HX2_DT, HX2_SCK);
+  unsigned long t2 = millis();
+  bool scale2OK = false;
+  while (millis() - t2 < 2000) {
+    if (scale2.is_ready()) { scale2OK = true; break; }
+    delay(10);
+  }
+  if (scale2OK) {
+    delay(1000);
+    scale2.tare();
+    Serial.printf("[TARE2] offset=%ld\n", scale2.get_offset());
+  } else {
+    Serial.println("[SCALE2] Not connected — skipping tare");
+  }
 
   WiFi.begin(ssid, password);
   maintainWiFi();
@@ -207,7 +212,6 @@ void loop() {
   if (millis() - lastLcd >= LCD_REFRESH_MS) {
 
     float w1   = readWeight1();
-    delay(100);
     float w2   = readWeight2();
     float d1   = readUltrasonic(TRIG1, ECHO1);
     float d2   = readUltrasonic(TRIG2, ECHO2);
@@ -218,7 +222,7 @@ void loop() {
     Serial.printf("[DATA] W1=%.2fkg D1=%.1f G1=%d | W2=%.2fkg D2=%.1f G2=%d | Batt=%.2f\n",
                   w1, d1, g1, w2, d2, g2, batt);
 
-    updateLCD();
+    updateLCD(w1, d1, w2, d2);
 
     if (millis() - lastSend >= SEND_INTERVAL_MS) {
       sendData(d1, g1, d2, g2, batt);

@@ -3,21 +3,20 @@
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
-#include <Adafruit_INA219.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include "HX711.h"
 
 /* ================= WIFI / BACKEND ================= */
-const char* ssid      = "TABAO_FAM";
-const char* password  = "JOAN062199";
+const char* ssid      = "TABAO1997";
+const char* password  = "JuliaTango1999";
 const char* serverURL = "https://sincere-creativity-production.up.railway.app/api/bin-data";
 const char* DEVICE_ID = "ESP32_001";
 
 /* ================= PINS ================= */
-#define LED_POWER   26   // Green  — solid ON in solar mode, OFF in idle mode
-#define LED_WIFI     4   // Yellow — blink while connecting, solid when connected (solar mode)
-#define LED_BLUE     2   // Blue   — solid in solar mode, goes LOW during HTTP POST
+#define LED_POWER   26
+#define LED_WIFI     4
+#define LED_BLUE     2
 #define SDA_PIN     13
 #define SCL_PIN     14
 #define TRIG1        5
@@ -33,58 +32,39 @@ const char* DEVICE_ID = "ESP32_001";
 #define BATTERY_PIN 33
 
 /* ================= CALIBRATION ================= */
-// Bin 1 & Bin 2: empty=46cm, full=4.3cm  (50% at ~25.1cm) — field-calibrated 2026-04-20
-#define BIN1_EMPTY         46.0f
-#define BIN2_EMPTY         46.0f
-#define BIN1_FULL           4.3f
-#define BIN2_FULL           4.3f
-
-// HX711 scale factors — for local display/debug only; raw ADC is sent to backend
-#define SCALE1              112133.0f  // raw counts per kg — Bin 1 (matches backend)
-#define SCALE2              112133.0f  // raw counts per kg — Bin 2 (same as Bin 1)
-// Suppress HX711 noise below this weight (raw drift after tare ≈ ±5000 counts ≈ 42g)
-#define WEIGHT_DEADBAND_KG 0.05f
-
-#define GAS_THRESHOLD      500
+#define BIN1_EMPTY         58.0f
+#define BIN2_EMPTY         48.0f
+#define BIN1_FULL          14.8f
+#define BIN2_FULL          13.8f
+#define SCALE1             21564.0f
+#define SCALE2             21201.0f
+#define WEIGHT_DEADBAND_KG  0.05f
+#define GAS_THRESHOLD        500
 
 /* ================= TIMING ================= */
-#define SENSOR_WAKE_STABILIZE_MS  3000UL
-#define GAS_CONFIRM_STABILIZE_MS  5000UL
-#define SOLAR_SEND_INTERVAL_MS   60000UL    // 1 min
-#define IDLE_SEND_INTERVAL_MS   600000UL    // 10 min
-#define LCD_REFRESH_MS            5000UL    // solar-mode periodic LCD refresh
-#define WDT_TIMEOUT_S                30     // reset ESP32 if loop stalls this long
-#define HTTP_RETRY_DELAY_MS       2000UL
+#define SEND_INTERVAL_MS   60000UL
+#define LCD_REFRESH_MS      5000UL
+#define WDT_TIMEOUT_S          30
+#define HTTP_RETRY_DELAY_MS  2000UL
+#define GAS_CONFIRM_MS       5000UL
 
 /* ================= OBJECTS ================= */
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-Adafruit_INA219    ina219;
 HX711 scale1;
 HX711 scale2;
 
 /* ================= STATE ================= */
-unsigned long solarTimer     = 0;
-unsigned long idleTimer      = 0;
+unsigned long sendTimer      = 0;
 unsigned long lastLcdRefresh = 0;
 bool bootSendPending = true;
-bool sensorsAwake    = false;
-bool lastSolarMode   = true;
-bool ina219OK        = false;
 
 /* ================= SENSOR VALUES ================= */
-// Raw — sent to backend
 float d1_cm, d2_cm;
 long  hx1Raw, hx2Raw;
 int   gas1, gas2;
-
-// Derived — local display/debug only
 float bin1Level, bin2Level;
 float bin1Weight, bin2Weight;
-
-// Battery / solar
 float battery_voltage;
-float charge_current;
-float charge_power;
 
 /* ================= HELPERS ================= */
 float readUltrasonicFiltered(int trig, int echo) {
@@ -104,33 +84,22 @@ float readUltrasonicFiltered(int trig, int echo) {
 }
 
 float getPercent(float dist, float emptyDist, float fullDist) {
-  float level = (emptyDist - dist) / (emptyDist - fullDist) * 100.0f;
-  return constrain(level, 0.0f, 100.0f);
+  return constrain((emptyDist - dist) / (emptyDist - fullDist) * 100.0f, 0.0f, 100.0f);
 }
 
 const char* resetReasonToString(esp_reset_reason_t reason) {
   switch (reason) {
-    case ESP_RST_UNKNOWN:   return "Unknown";
-    case ESP_RST_POWERON:   return "Power-on";
-    case ESP_RST_EXT:       return "External pin";
-    case ESP_RST_SW:        return "Software reset";
-    case ESP_RST_PANIC:     return "Exception/panic";
-    case ESP_RST_INT_WDT:   return "Interrupt watchdog";
-    case ESP_RST_TASK_WDT:  return "Task watchdog";
-    case ESP_RST_WDT:       return "Other watchdog";
-    case ESP_RST_DEEPSLEEP: return "Deep sleep wake";
-    case ESP_RST_BROWNOUT:  return "Brownout";
-    case ESP_RST_SDIO:      return "SDIO";
-    default:                return "Unmapped";
+    case ESP_RST_POWERON:  return "Power-on";
+    case ESP_RST_SW:       return "Software reset";
+    case ESP_RST_PANIC:    return "Exception/panic";
+    case ESP_RST_INT_WDT:  return "Interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "Task watchdog";
+    case ESP_RST_BROWNOUT: return "Brownout";
+    default:               return "Other";
   }
 }
 
 /* ================= WIFI ================= */
-void sleepWiFi() {
-  if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-}
-
 bool maintainWiFi(unsigned long timeoutMs = 15000) {
   if (WiFi.status() == WL_CONNECTED) return true;
 
@@ -155,30 +124,6 @@ bool maintainWiFi(unsigned long timeoutMs = 15000) {
   return true;
 }
 
-/* ================= POWER / WAKE ================= */
-// HX711s are kept powered continuously — power cycling drifts the zero offset,
-// and the tare captured at setup no longer matches after power_up. Current draw
-// is ~1.5 mA per HX711, negligible vs WiFi. Matches bin1_test.ino behavior.
-void wakeSensors(const char* reason, unsigned long stabilizeMs = SENSOR_WAKE_STABILIZE_MS) {
-  if (!sensorsAwake) {
-    Serial.printf("[Wake] Sensors ON for %s\n", reason);
-    sensorsAwake = true;
-  }
-  if (stabilizeMs > 0) delay(stabilizeMs);
-}
-
-void sleepSensors() {
-  if (!sensorsAwake) return;
-  Serial.println(F("[Sleep] Sensors idle (HX711 stays powered)"));
-  sensorsAwake = false;
-}
-
-bool quickGasDetected() {
-  gas1 = analogRead(MQ1_AO);
-  gas2 = analogRead(MQ2_AO);
-  return gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD;
-}
-
 /* ================= READ ALL SENSORS ================= */
 void readAllSensors() {
   d1_cm = readUltrasonicFiltered(TRIG1, ECHO1);
@@ -187,9 +132,8 @@ void readAllSensors() {
   bin2Level = (d2_cm >= 0) ? getPercent(d2_cm, BIN2_EMPTY, BIN2_FULL) : 0.0f;
 
   hx1Raw = scale1.get_value(10);
-  delay(20);                             // let 3.3V rail settle before the next HX711 read
   hx2Raw = scale2.get_value(10);
-  if (hx1Raw < 0) hx1Raw = -hx1Raw;    // load cell wired inverted — flip sign
+  if (hx1Raw < 0) hx1Raw = -hx1Raw;
   if (hx2Raw < 0) hx2Raw = -hx2Raw;
   bin1Weight = (float)hx1Raw / SCALE1;
   bin2Weight = (float)hx2Raw / SCALE2;
@@ -198,30 +142,21 @@ void readAllSensors() {
 
   gas1 = analogRead(MQ1_AO);
   gas2 = analogRead(MQ2_AO);
-  battery_voltage = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 3.857f;
+  battery_voltage = (analogRead(BATTERY_PIN) / 4095.0f) * 3.3f * 4.0f;
 
-  if (ina219OK) {
-    charge_current = ina219.getCurrent_mA() / 1000.0f;
-    charge_power   = ina219.getPower_mW()   / 1000.0f;
-  } else {
-    charge_current = 0.0f;
-    charge_power   = 0.0f;
-  }
-
-  // Format weight as grams (<1 kg) or kg — mirrors a weighing-scale display
   char w1[8], w2[8];
   if (bin1Weight < 1.0f) snprintf(w1, sizeof(w1), "%dg",   (int)(bin1Weight * 1000));
   else                   snprintf(w1, sizeof(w1), "%.1fkg", bin1Weight);
   if (bin2Weight < 1.0f) snprintf(w2, sizeof(w2), "%dg",   (int)(bin2Weight * 1000));
   else                   snprintf(w2, sizeof(w2), "%.1fkg", bin2Weight);
 
-  Serial.printf("[S] d1=%.1fcm(%.0f%%) d2=%.1fcm(%.0f%%) hx1=%ld(%s) hx2=%ld(%s) g1=%d g2=%d batt=%.2fV I=%.3fA P=%.2fW\n",
-    d1_cm, bin1Level, d2_cm, bin2Level, hx1Raw, w1, hx2Raw, w2, gas1, gas2, battery_voltage, charge_current, charge_power);
+  Serial.printf("[S] d1=%.1fcm(%.0f%%) d2=%.1fcm(%.0f%%) hx1=%ld(%s) hx2=%ld(%s) g1=%d g2=%d batt=%.2fV\n",
+    d1_cm, bin1Level, d2_cm, bin2Level, hx1Raw, w1, hx2Raw, w2, gas1, gas2, battery_voltage);
 }
 
-bool confirmGasState(const char* reason) {
-  wakeSensors(reason, GAS_CONFIRM_STABILIZE_MS);
-  readAllSensors();
+bool quickGasDetected() {
+  gas1 = analogRead(MQ1_AO);
+  gas2 = analogRead(MQ2_AO);
   return gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD;
 }
 
@@ -229,18 +164,23 @@ bool confirmGasState(const char* reason) {
 void printWeightField(float kg) {
   if      (kg == 0.0f) lcd.print(F("----"));
   else if (kg < 1.0f)  { lcd.print((int)(kg * 1000)); lcd.print(F("g")); }
-  else                  { lcd.print(kg, 1);             lcd.print(F("kg")); }
+  else                  { lcd.print(kg, 1); lcd.print(F("kg")); }
 }
 
 void updateLCD() {
   lcd.clear();
+
   lcd.setCursor(0, 0);
-  lcd.print(F("B1: "));
+  lcd.print(F("B1:"));
   printWeightField(bin1Weight);
+  lcd.print(F(" D:"));
+  if (d1_cm >= 0) lcd.print((int)d1_cm); else lcd.print(F("ER"));
 
   lcd.setCursor(0, 1);
-  lcd.print(F("B2: "));
+  lcd.print(F("B2:"));
   printWeightField(bin2Weight);
+  lcd.print(F(" D:"));
+  if (d2_cm >= 0) lcd.print((int)d2_cm); else lcd.print(F("ER"));
 }
 
 /* ================= HTTP ================= */
@@ -252,7 +192,7 @@ bool postJSON(const String& json) {
   http.begin(client, serverURL);
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
   http.setTimeout(10000);
-  http.addHeader("Content-Type", "application/json");
+  http.addHeader(F("Content-Type"), F("application/json"));
 
   int code = http.POST(json);
   bool ok  = (code == 200 || code == 201);
@@ -273,7 +213,6 @@ void sendData(const char* eventTag = nullptr) {
 
   digitalWrite(LED_BLUE, LOW);
 
-  // Build JSON in a single String with pre-allocated buffer — no heap thrash
   String json;
   json.reserve(220);
   json  = F("{\"device_id\":\""); json += DEVICE_ID; json += '"';
@@ -289,7 +228,6 @@ void sendData(const char* eventTag = nullptr) {
   Serial.print(F("[HTTP] Sending: "));
   Serial.println(json);
 
-  // One retry on failure (covers transient TLS / DNS / server hiccups)
   if (!postJSON(json)) {
     Serial.println(F("[HTTP] Retrying..."));
     delay(HTTP_RETRY_DELAY_MS);
@@ -298,7 +236,6 @@ void sendData(const char* eventTag = nullptr) {
   }
 
   digitalWrite(LED_BLUE, HIGH);
-  updateLCD();
 }
 
 /* ================= SETUP ================= */
@@ -307,9 +244,8 @@ void setup() {
   delay(200);
 
   esp_reset_reason_t reason = esp_reset_reason();
-  Serial.printf("[Boot] Reset reason: %d (%s)\n", (int)reason, resetReasonToString(reason));
+  Serial.printf("[Boot] Reset: %s\n", resetReasonToString(reason));
 
-  // Task watchdog — auto-reset if loop stalls > WDT_TIMEOUT_S
   esp_task_wdt_init(WDT_TIMEOUT_S, true);
   esp_task_wdt_add(NULL);
 
@@ -318,7 +254,7 @@ void setup() {
   pinMode(LED_POWER, OUTPUT);
   pinMode(LED_BLUE,  OUTPUT);
   pinMode(LED_WIFI,  OUTPUT);
-  digitalWrite(LED_POWER, LOW);
+  digitalWrite(LED_POWER, HIGH);
   digitalWrite(LED_BLUE,  LOW);
   digitalWrite(LED_WIFI,  LOW);
 
@@ -327,24 +263,12 @@ void setup() {
   lcd.backlight();
   lcd.print(F("Booting..."));
 
-  // INA219 init check — without this sensor, solar/idle mode detection is impossible
-  ina219OK = ina219.begin();
-  if (!ina219OK) {
-    Serial.println(F("[WARN] INA219 not found — solar detection disabled, staying in idle mode"));
-    lcd.setCursor(0, 1);
-    lcd.print(F("INA219 missing!"));
-    delay(1500);
-  }
-
   scale1.begin(HX1_DT, HX1_SCK);
   scale2.begin(HX2_DT, HX2_SCK);
-  delay(3000);                 // let HX711s stabilize before tare — otherwise zero offset captures garbage
+  delay(3000);
   scale1.tare();
   scale2.tare();
-  sensorsAwake = true;
 
-  Serial.print(F("[Setup] Connecting to WiFi: "));
-  Serial.println(ssid);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   maintainWiFi();
@@ -353,8 +277,6 @@ void setup() {
   lcd.print(WiFi.status() == WL_CONNECTED ? F("WiFi OK") : F("WiFi Retry"));
   delay(1000);
 
-  // Read sensors at boot; defer the first POST until loop() to avoid heavy
-  // network/TLS work during startup.
   readAllSensors();
 }
 
@@ -362,93 +284,46 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
 
-  float current     = ina219OK ? (ina219.getCurrent_mA() / 1000.0f) : 0.0f;
-  bool  solarMode   = ina219OK && (current > 0.1f);
-  bool  gasDetected = quickGasDetected();
-
   if (bootSendPending && millis() >= 5000UL) {
     sendData("boot");
     bootSendPending = false;
-    solarTimer = idleTimer = lastLcdRefresh = millis();
+    sendTimer = lastLcdRefresh = millis();
   }
 
-  if (solarMode != lastSolarMode) {
-    if (solarMode) wakeSensors("solar mode", SENSOR_WAKE_STABILIZE_MS);
-    else           { sleepSensors(); sleepWiFi(); }
-    lastSolarMode = solarMode;
-  }
-
-  /* -------- SOLAR MODE -------- */
-  if (solarMode) {
-    wakeSensors("solar mode", 0);
-    maintainWiFi();
-
-    digitalWrite(LED_POWER, HIGH);
-    digitalWrite(LED_WIFI,  HIGH);
-    digitalWrite(LED_BLUE,  HIGH);
-    lcd.backlight();
-
-    if (gasDetected) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print(F("!! GAS ALERT !!"));
-
-      if (confirmGasState("gas_detected")) {
-        sendData("gas_detected");
-        while (quickGasDetected()) {
-          delay(5000);
-          esp_task_wdt_reset();
-        }
-        if (!confirmGasState("gas_normal")) sendData("gas_normal");
-      } else {
-        Serial.println(F("[Gas] Cleared before confirmed send"));
+  // Gas alert
+  if (quickGasDetected()) {
+    Serial.println(F("[Gas] Alert!"));
+    delay(GAS_CONFIRM_MS);
+    esp_task_wdt_reset();
+    if (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD) {
+      readAllSensors();
+      sendData("gas_detected");
+      while (gas1 >= GAS_THRESHOLD || gas2 >= GAS_THRESHOLD) {
+        gas1 = analogRead(MQ1_AO);
+        gas2 = analogRead(MQ2_AO);
+        delay(5000);
+        esp_task_wdt_reset();
       }
-    }
-
-    // Live LCD refresh between 60s sends — updates weight every 5s
-    if (millis() - lastLcdRefresh >= LCD_REFRESH_MS) {
-      readAllSensors();
-      updateLCD();
-      lastLcdRefresh = millis();
-    }
-
-    if (millis() - solarTimer >= SOLAR_SEND_INTERVAL_MS) {
-      wakeSensors("solar sample", SENSOR_WAKE_STABILIZE_MS);
-      readAllSensors();
-      sendData();
-      solarTimer = millis();
+      sendData("gas_normal");
     }
   }
 
-  /* -------- IDLE MODE -------- */
-  else {
-    digitalWrite(LED_POWER, LOW);
-    digitalWrite(LED_WIFI,  LOW);
-    digitalWrite(LED_BLUE,  LOW);
-    lcd.noBacklight();
-
-    if (gasDetected) {
-      if (confirmGasState("gas_detected")) {
-        sendData("gas_detected");
-        while (quickGasDetected()) {
-          delay(5000);
-          esp_task_wdt_reset();
-        }
-        if (!confirmGasState("gas_normal")) sendData("gas_normal");
-      } else {
-        Serial.println(F("[Gas] Cleared before confirmed send"));
-      }
-      sleepSensors();
-      sleepWiFi();
-    }
-
-    if (millis() - idleTimer >= IDLE_SEND_INTERVAL_MS) {
-      wakeSensors("idle sample", SENSOR_WAKE_STABILIZE_MS);
-      readAllSensors();
-      sendData();
-      idleTimer = millis();
-      sleepSensors();
-      sleepWiFi();
-    }
+  // LCD refresh
+  if (millis() - lastLcdRefresh >= LCD_REFRESH_MS) {
+    readAllSensors();
+    updateLCD();
+    lastLcdRefresh = millis();
   }
+
+  // Periodic send
+  if (millis() - sendTimer >= SEND_INTERVAL_MS) {
+    readAllSensors();
+    sendData();
+    sendTimer = millis();
+  }
+
+  digitalWrite(LED_POWER, HIGH);
+  digitalWrite(LED_WIFI,  WiFi.status() == WL_CONNECTED ? HIGH : LOW);
+  digitalWrite(LED_BLUE,  HIGH);
+  lcd.backlight();
 }

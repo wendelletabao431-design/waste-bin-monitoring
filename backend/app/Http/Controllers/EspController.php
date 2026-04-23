@@ -317,9 +317,13 @@ class EspController extends Controller
             return 0.0;
         }
 
-        // Firmware sends untared raw. Formula: weight_kg = (empty_offset - raw) / scale
-        $emptyOffset = config("sensors.load_cell.bin_{$binNumber}.empty_offset_raw", 313000.0);
-        $weight      = ($emptyOffset - $hx711Raw) / $scale;
+        // Two firmware styles supported:
+        //   - If empty_offset_raw > 0: firmware sends untared raw, use (offset - raw) / scale
+        //   - If empty_offset_raw == 0: firmware sends tared raw (near 0 when empty), use raw / scale
+        $emptyOffset = config("sensors.load_cell.bin_{$binNumber}.empty_offset_raw", 0.0);
+        $weight      = $emptyOffset > 0
+            ? ($emptyOffset - $hx711Raw) / $scale
+            : $hx711Raw / $scale;
 
         Log::info("Weight calculation", [
             'bin'          => $binNumber,
