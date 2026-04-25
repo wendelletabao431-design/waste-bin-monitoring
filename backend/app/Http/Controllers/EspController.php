@@ -262,6 +262,11 @@ class EspController extends Controller
             return 0;
         }
 
+        // Treat any reading above 58cm as empty bin (out-of-range)
+        if ($distanceCm > 58) {
+            return 0;
+        }
+
         $defaults = $binNumber === 1
             ? ['empty' => 58.0, 'full' => 10.0]
             : ['empty' => 48.0, 'full' => 10.0];
