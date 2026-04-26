@@ -285,7 +285,7 @@ class EspController extends Controller
         }
 
         $percent = (($emptyDistance - $distanceCm) / ($emptyDistance - $fullDistance)) * 100;
-        
+
         // Clamp between 0 and 100
         return max(0, min(100, $percent));
     }

@@ -28,18 +28,18 @@ return [
     'ultrasonic' => [
         'bin_1' => [
             'empty_distance_cm' => 58.0,
-            'full_distance_cm'  => 14.8,
+            'full_distance_cm'  => 18.0,   // adjusted from 14.8 to bake in +7% calibration
             'distance_markers_cm' => [
-                50 => 34.0,   // 50% fill
-                90 => 14.8,   // 90% fill (critical alert)
+                50 => 34.0,
+                90 => 18.0,
             ],
         ],
         'bin_2' => [
             'empty_distance_cm' => 48.0,
-            'full_distance_cm'  => 13.8,
+            'full_distance_cm'  => 16.0,   // adjusted from 13.8 to bake in +7% calibration
             'distance_markers_cm' => [
-                50 => 29.0,   // 50% fill
-                90 => 13.8,   // 90% fill (critical alert)
+                50 => 29.0,
+                90 => 16.0,
             ],
         ],
     ],
