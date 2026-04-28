@@ -6,7 +6,6 @@ use App\Models\User;
 use App\Models\Device;
 use App\Models\Alert;
 use App\Events\AlertCreated;
-use App\Notifications\AlertNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
@@ -106,31 +105,10 @@ class TestController extends Controller
         }
 
         if ($users->isNotEmpty()) {
-            foreach ($users as $user) {
-                try {
-                    $user->notify(new AlertNotification($alert));
-                    $results['emails_sent']++;
-                    $results['recipients'][] = [
-                        'email' => $user->email,
-                        'status' => 'sent',
-                    ];
-                } catch (\Exception $e) {
-                    $results['emails_failed']++;
-                    $results['recipients'][] = [
-                        'email' => $user->email,
-                        'status' => 'failed',
-                        'error' => $e->getMessage(),
-                    ];
-                    Log::error('Test alert email failed', [
-                        'email' => $user->email,
-                        'error' => $e->getMessage()
-                    ]);
-                }
-            }
-            $results['message'] .= "Sent {$results['emails_sent']} email(s). Check your inbox (and spam folder).";
-            if ($results['emails_failed'] > 0) {
-                $results['message'] .= " {$results['emails_failed']} email(s) failed.";
-            }
+            event(new AlertCreated($alert));
+            $results['emails_sent'] = $users->count();
+            $results['recipients'] = $users->map(fn($u) => ['email' => $u->email, 'status' => 'queued'])->toArray();
+            $results['message'] .= "AlertCreated event dispatched to {$users->count()} recipient(s). Check your inbox (and spam folder).";
         } else {
             $results['message'] .= 'No users with notifications enabled. Enable notifications in profile settings.';
         }
@@ -506,8 +484,10 @@ class TestController extends Controller
             return response()->json($result);
         }
 
+        $verifySsl = config('services.gmail.verify_ssl', true);
+
         // STEP 1: Get access token
-        $tokenResp = Http::timeout(15)->post('https://oauth2.googleapis.com/token', [
+        $tokenResp = Http::timeout(15)->withOptions(['verify' => $verifySsl])->post('https://oauth2.googleapis.com/token', [
             'client_id'     => $clientId,
             'client_secret' => $clientSecret,
             'refresh_token' => $refreshToken,
@@ -543,6 +523,7 @@ class TestController extends Controller
 
         $sendResp = Http::withToken($accessToken)
             ->timeout(30)
+            ->withOptions(['verify' => $verifySsl])
             ->post('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', [
                 'raw' => $raw,
             ]);

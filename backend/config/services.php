@@ -56,6 +56,7 @@ return [
         'client_secret' => env('GMAIL_CLIENT_SECRET'),
         'refresh_token' => env('GMAIL_REFRESH_TOKEN'),
         'from'          => env('GMAIL_FROM', env('MAIL_FROM_ADDRESS')),
+        'verify_ssl'    => env('GMAIL_VERIFY_SSL', true),
     ],
 
 ];

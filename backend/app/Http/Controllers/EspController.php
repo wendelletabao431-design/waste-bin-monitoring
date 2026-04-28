@@ -509,7 +509,8 @@ class EspController extends Controller
                 ['type' => 'weight_critical', 'status' => 'active'],
                 ['message' => "Bin weight critical (" . round($weightKg, 1) . " kg)"]
             );
-            if ($alert->wasRecentlyCreated) {
+            if ($alert->wasRecentlyCreated || $alert->updated_at->diffInMinutes(now()) >= 5) {
+                $alert->touch();
                 event(new AlertCreated($alert));
             }
         } elseif ($weightKg >= $warningKg) {
@@ -517,7 +518,8 @@ class EspController extends Controller
                 ['type' => 'weight_warning', 'status' => 'active'],
                 ['message' => "Bin weight warning (" . round($weightKg, 1) . " kg)"]
             );
-            if ($alert->wasRecentlyCreated) {
+            if ($alert->wasRecentlyCreated || $alert->updated_at->diffInMinutes(now()) >= 5) {
+                $alert->touch();
                 event(new AlertCreated($alert));
             }
         } else {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Notifications\Channels;
 
 use Illuminate\Notifications\Notification;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -14,6 +15,13 @@ class GmailChannel
     {
         if (!method_exists($notification, 'toGmail')) {
             return;
+        }
+
+        foreach (['client_id', 'client_secret', 'refresh_token', 'from'] as $key) {
+            if (empty(config("services.gmail.{$key}"))) {
+                Log::error("GmailChannel: missing config key services.gmail.{$key}");
+                throw new \RuntimeException("Gmail OAuth2: missing config key 'services.gmail.{$key}'. Add GMAIL_" . strtoupper($key) . " to your .env file.");
+            }
         }
 
         $toEmail = method_exists($notifiable, 'routeNotificationFor')
@@ -38,6 +46,7 @@ class GmailChannel
         $raw      = $this->buildRawMessage($toEmail, $payload['subject'], $payload['html']);
         $response = Http::withToken($accessToken)
             ->timeout(30)
+            ->withOptions(['verify' => config('services.gmail.verify_ssl', true)])
             ->post('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', [
                 'raw' => $raw,
             ]);
@@ -57,22 +66,27 @@ class GmailChannel
 
     private function getAccessToken(): ?string
     {
-        $response = Http::timeout(15)->post('https://oauth2.googleapis.com/token', [
-            'client_id'     => config('services.gmail.client_id'),
-            'client_secret' => config('services.gmail.client_secret'),
-            'refresh_token' => config('services.gmail.refresh_token'),
-            'grant_type'    => 'refresh_token',
-        ]);
-
-        if ($response->failed()) {
-            Log::error('GmailChannel: token refresh failed', [
-                'status' => $response->status(),
-                'body'   => $response->body(),
+        // Cache the token for 50 min — Gmail access tokens expire after 60 min
+        return Cache::remember('gmail_access_token', 3000, function () {
+            $response = Http::timeout(15)
+                ->withOptions(['verify' => config('services.gmail.verify_ssl', true)])
+                ->post('https://oauth2.googleapis.com/token', [
+                'client_id'     => config('services.gmail.client_id'),
+                'client_secret' => config('services.gmail.client_secret'),
+                'refresh_token' => config('services.gmail.refresh_token'),
+                'grant_type'    => 'refresh_token',
             ]);
-            return null;
-        }
 
-        return $response->json('access_token');
+            if ($response->failed()) {
+                Log::error('GmailChannel: token refresh failed', [
+                    'status' => $response->status(),
+                    'body'   => $response->body(),
+                ]);
+                return null;
+            }
+
+            return $response->json('access_token');
+        });
     }
 
     private function buildRawMessage(string $to, string $subject, string $html): string

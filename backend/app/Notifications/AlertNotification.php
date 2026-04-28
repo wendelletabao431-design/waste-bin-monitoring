@@ -4,6 +4,7 @@ namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
+use Illuminate\Support\Facades\Log;
 use App\Models\Alert;
 use App\Notifications\Channels\GmailChannel;
 
@@ -45,9 +46,12 @@ class AlertNotification extends Notification
 
         $frontendUrl = config('app.frontend_url', 'https://smart-trash-bin-mu.vercel.app');
 
-        $device   = $this->alert->device;
-        $name     = e($device->name ?? 'Unknown device');
-        $location = e($device->location ?? 'Unknown location');
+        $device = $this->alert->device;
+        if (!$device) {
+            Log::warning('AlertNotification: device not found for alert', ['alert_id' => $this->alert->id]);
+        }
+        $name     = e($device?->name ?? 'Unknown device');
+        $location = e($device?->location ?? 'Unknown location');
         $type     = e($this->alert->type);
         $message  = e($this->alert->message);
         $time     = e($this->alert->created_at->format('M d, Y H:i:s'));
