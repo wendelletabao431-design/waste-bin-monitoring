@@ -102,7 +102,7 @@ return [
     | the legacy battery_adc fallback path in EspController.
     */
     'battery_max_voltage' => 12.6,
-    'battery_min_voltage' => 9.0,
+    'battery_min_voltage' => 6.4,
     'adc_max_value'       => 4095,
     'voltage_divider'     => 4.0,   // Matches firmware: battery_voltage = adc * 4.0f
     'adc_reference'       => 3.3,
