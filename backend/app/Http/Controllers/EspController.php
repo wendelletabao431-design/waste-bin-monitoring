@@ -382,22 +382,47 @@ class EspController extends Controller
     }
 
     /**
-     * Derive battery percentage from reported battery voltage.
-     * 
-     * Formula: percent = (voltage - min) / (max - min) * 100
+     * Derive battery percentage from voltage using the calibrated lookup table.
+     *
+     * Breakpoints:
+     *  6.4V =   0%
+     *  7.0V =  ~9.7%
+     *  8.0V = ~25.8%
+     *  9.0V = ~41.9%
+     * 10.0V = ~58.1%
+     * 11.0V = ~74.2%
+     * 12.0V = ~90.3%
+     * 12.6V = 100%
      */
     private function deriveBatteryPercent(float $batteryVoltage): float
     {
-        $maxVoltage = config('sensors.battery_max_voltage', 12.6);
-        $minVoltage = config('sensors.battery_min_voltage', 9.0);
+        $table = [
+            6.4  => 0.0,
+            7.0  => 9.7,
+            8.0  => 25.8,
+            9.0  => 41.9,
+            10.0 => 58.1,
+            11.0 => 74.2,
+            12.0 => 90.3,
+            12.6 => 100.0,
+        ];
 
-        if ($maxVoltage == $minVoltage) {
-            return 0.0;
+        if ($batteryVoltage <= 6.4)  return 0.0;
+        if ($batteryVoltage >= 12.6) return 100.0;
+
+        $voltages = array_keys($table);
+        foreach ($voltages as $i => $v) {
+            if ($batteryVoltage < $v) {
+                $vLow  = $voltages[$i - 1];
+                $vHigh = $v;
+                $pLow  = $table[$vLow];
+                $pHigh = $table[$vHigh];
+                $ratio = ($batteryVoltage - $vLow) / ($vHigh - $vLow);
+                return round($pLow + $ratio * ($pHigh - $pLow), 1);
+            }
         }
 
-        $percent = (($batteryVoltage - $minVoltage) / ($maxVoltage - $minVoltage)) * 100;
-
-        return max(0, min(100, $percent));
+        return 100.0;
     }
 
     /**
