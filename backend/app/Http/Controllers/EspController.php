@@ -385,29 +385,25 @@ class EspController extends Controller
      * Derive battery percentage from voltage using the calibrated lookup table.
      *
      * Breakpoints:
-     *  6.4V =   0%
-     *  7.0V =  ~9.7%
-     *  8.0V = ~25.8%
-     *  9.0V = ~41.9%
-     * 10.0V = ~58.1%
-     * 11.0V = ~74.2%
-     * 12.0V = ~90.3%
+     *  8.0V =   0%
+     *  8.5V =  ~11%
+     *  9.0V =  ~22%
+     * 10.0V =  ~43%
+     * 11.0V =  ~65%
      * 12.6V = 100%
      */
     private function deriveBatteryPercent(float $batteryVoltage): float
     {
         $table = [
-            6.4  => 0.0,
-            7.0  => 9.7,
-            8.0  => 25.8,
-            9.0  => 41.9,
-            10.0 => 58.1,
-            11.0 => 74.2,
-            12.0 => 90.3,
+            8.0  => 0.0,
+            8.5  => 11.0,
+            9.0  => 22.0,
+            10.0 => 43.0,
+            11.0 => 65.0,
             12.6 => 100.0,
         ];
 
-        if ($batteryVoltage <= 6.4)  return 0.0;
+        if ($batteryVoltage <= 8.0)  return 0.0;
         if ($batteryVoltage >= 12.6) return 100.0;
 
         $voltages = array_keys($table);
