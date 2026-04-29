@@ -54,9 +54,11 @@ class AlertNotification extends Notification
         $location = e($device?->location ?? 'Unknown location');
         $type     = e($this->alert->type);
         $message  = e($this->alert->message);
-        $time     = e($this->alert->created_at->format('M d, Y H:i:s'));
+        $time     = e($this->alert->created_at->timezone('Asia/Manila')->format('M d, Y H:i:s T'));
 
-        $subject = "{$emoji} {$severity}: {$name} Alert";
+        // RFC 2047 MIME encoding — required for emoji/non-ASCII in email subject headers
+        $subjectRaw = "{$emoji} {$severity}: {$name} Alert";
+        $subject    = '=?UTF-8?B?' . base64_encode($subjectRaw) . '?=';
 
         $html = <<<HTML
 <!DOCTYPE html>

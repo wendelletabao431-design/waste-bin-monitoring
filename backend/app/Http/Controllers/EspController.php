@@ -580,9 +580,9 @@ class EspController extends Controller
             'type'    => 'battery_health',
             'status'  => 'active',
             'message' => implode(' | ', [
-                "Battery: {$batteryPercent}% ({$battStatus})",
-                "Waste Level: {$fillPercent}%",
-                "Weight: {$weightKg} kg",
+                'Battery: ' . round($batteryPercent, 1) . "% ({$battStatus})",
+                'Waste Level: ' . round($fillPercent, 1) . '%',
+                'Weight: ' . round($weightKg, 2) . ' kg',
                 "Gas: {$gasStatus}",
             ]),
         ]);
