@@ -125,5 +125,5 @@ return [
     |
     | Device is considered offline after this many minutes without data.
     */
-    'offline_threshold_minutes' => 5,
+    'offline_threshold_minutes' => 12,
 ];
